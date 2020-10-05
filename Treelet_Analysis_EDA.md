@@ -1,13 +1,13 @@
 ---
 title: "Treelet Transform: Identifing clusters of ICD-9 Diagnoses in a Boston Trauma Center"
-subtitle: "Exploratory Data Analysis & Visualization"
-author: "Dominic DiSanto"
+subtitle: "Data Cleaning, Exploratory Data Analysis & Visualization"
+author: "Dominic DiSanto\n Master's Thesis"
 date: "Updated 9/20/2020"
 output: 
   html_document:
     keep_md: true
     toc: true
-    toc_depth: '5'
+    toc_depth: '3'
     code_folding: show
 ---
 
@@ -17,73 +17,438 @@ output:
 ## Libraries
 
 ```r
-library(magrittr) # Ceci n'est pas une %>% 
+library(magrittr) # Ceci n'est pas une %>%, loaded via dplyr also but liked to include for transparency 
 library(dplyr) # General data management, cleaning (admittedly I switch between Base R and tidyverse as I code, somewhat stream-of-consciousness ly)
 library(ggplot2) # Visualization
 library(comorbidity) # Used to easily generate Elixhauser comorbdity grouping/categorization [8/23/2020 Note: may be excluded if Elixhauser or Charlson not used]
 library(tidyr) # pivot functions for transposing data to/from long and wide
 library(icd) # used in validity check of diagnoses codes
-# library(lubridate) # used in working with datetime variables, primarily calculating length of stay 
+library(lubridate) # used in evaluating dates, most notably in date of death 
+library(lares) # corr_cross function used to identify the top correlations within a data frame/design matrix
+library(corrplot) # used for visualizing correlation matrices
+library(here) # Used for data-calls/ease of file path storage usage 
 ```
 
-## File Paths
+
+## File Path
+
+This is my first attempt at using the `here` package for improved functionality of this program. I believe to use the `here` package as written in my program, your data simply need to be contained in a sub-folder called **Data** from where you've saved this file. For transparency, I'll describe my general (and I think simplistic) file structure for this analysis: Within a general project folder (say `Treelet`), this script and it's output are contained in an ***"Analysis"*** subfolder and the data within a ***Data*** subfolder of the same project folder. For the raw input data from MIMIC, I included a **Raw** sub-folder within the **Data** folder (to isolate raw MIMIC data from any exported data files or cleaned data). 
+
+Because I contain my analysis in a sub-folder of my main project file, I had to therefore manually set my `.here` file one level above my analytic file. If you happen to mirror my file structure, you must simply use the command `set_here("../")`, which will create a `.here` file in your root folder, a level above the analytic subfolder.      
+
+
 
 ```r
-lib <- "C:/Users/Dominic DiSanto/Documents/MIMIC-III/mimic-iii-clinical-database-1.4/" # General location of all MIMIC files
-icd_fp <- paste0(lib, "Diagnoses_ICD.csv")
+here()
 ```
+
+```
+## [1] "C:/Users/Dominic DiSanto/Documents/Grad School/Masters/Thesis/Treelet"
+```
+
+
+## Data Cleaning  
+
+I will broadly classify the data cleaning in two areas: **Patient Data** and **Diagnoses Data**. **Patient data cleaning** will include wrangling of patient-level demographic and admissions data, identifying patients with multiple admissions and specifying which admission of interest to use in analysis, and other individual/person cleaning. **Diagnosis data cleaning** will involve identifying and cleaning the ICD-9 diagnoses code data to be included in the treelet transform dimension reduction technique.  
+  
+These steps are not entirely separate, as the included diagnoses codes will only involve patients in our analytic cohort from the **patient data cleaning**, but this separation is useful and somewhat natural due to the varied input data and steps required in each process. 
+
+
+### Cleaning Patient Data  
+
+Before meaningfully working with the any data or performing analyses, we must identify our patient cohort to be used in analysis. The first step will be identifying an analytic patient cohort. This will include:  
+- Identify the admission of interest among patients with multiple stays
+    - This will be the earliest admission, which we will synonymously reference as earliest admission or first encounter 
+- Removing pediatric patients (those under 18 at time of admission)
+- Examining and cleaning variables/covariates to an "analytic format", the exact definition which will be data element dependent but will prepare elements for proper analysis, exploration, and visualization
+
+
+#### Cohort Identification
+
+
+As mentioned above, we must identify our analytic cohort by:  
+- Identify the admission of interest among patients with multiple stays
+    - This will be the earliest admission, which we will synonymously reference as earliest admission or first encounter 
+- Removing pediatric patients (those under 18 at time of admission)
+
+
+To accomplish both of our goals above, we must first identify the admissions of interest for each patient. As mentioned preivously, we will use the first patient encounter in our data set to identify diagnoses to include in our dimension reduction and information/data to include in our analyses. 
+
+
+```r
+admit <- read.csv(here("Data", "Raw", "ADMISSIONS.csv"))
+
+# # Number of patients with multiple visits
+cat("There are", admit %>% group_by(SUBJECT_ID) %>% count() %>% filter(n>1) %>% nrow(), "patients in our data set with multiple admissions")
+```
+
+```
+## There are 7537 patients in our data set with multiple admissions
+```
+
+```r
+cat("These individuals with multiple admissions account for", admit %>% group_by(SUBJECT_ID) %>% count() %>% filter(n>1) %>% ungroup() %>%  select(n) %>% sum(), "visits, including their index dates/first admissions.")
+```
+
+```
+## These individuals with multiple admissions account for 19993 visits, including their index dates/first admissions.
+```
+
+```r
+  # # Of the 58,976 visits, 19,993 are duplicate visits (including first encounter) among 7,537 patients
+  # # therefore of the 58,976 visits, 12,456 are removed resulting in 46,520 unique patient first-encounters
+
+admit_unq <- admit %>% 
+  group_by(SUBJECT_ID) %>% 
+  filter(ADMITTIME==min(ADMITTIME)) %>% 
+  ungroup() %>% 
+  select(SUBJECT_ID, HADM_ID, ADMITTIME, DISCHTIME, ADMISSION_TYPE, INSURANCE)
+
+if(admit_unq %>% nrow() !=  admit_unq %>% distinct(SUBJECT_ID) %>% nrow()) {
+  print("Problem with admit data, the number of rows and patients in this data frame should be equal but are not")
+  break
+}
+```
+
+
+We can now merge in our patient data to each admission of interest to calculate age and limit our population   
+ 
+
+```r
+pts_raw <- read.csv(here("Data", "Raw", "PATIENTS.csv"))
+
+pts_red <- pts_raw %>% select(SUBJECT_ID, DOB, DOD, GENDER)
+
+admit_pts <- merge(pts_red, admit_unq, by="SUBJECT_ID", all=T) %>%
+  mutate(Age=
+           (difftime(ADMITTIME, DOB, unit="weeks") %>%
+              as.integer()/52) %>%
+           floor()) %>%
+  select(SUBJECT_ID, Age, everything(), -DOB) %>% filter(Age>=18)
+
+
+admit_pts %>% distinct(ADMISSION_TYPE)
+```
+
+```
+##   ADMISSION_TYPE
+## 1      EMERGENCY
+## 2       ELECTIVE
+## 3         URGENT
+```
+
+```r
+  # Confirming there are no "NEWBORN" admission types
+
+admit_pts <- admit_pts %>% select(-ADMISSION_TYPE)
+```
+
+We have now identified our cohort of interest of adults (patients 18 or older at first admission) and have identified our first-encounters/earliest visits of interest. There is however some additional cleaning necessary for our variables of interest to include in EDA and analysis later.
+
+#### Covariate Cleaning
+
+Cleaning of patient-level characteristics are carried out and described below. This section will not include analysis or visualization, which are saved for the EDA section of this program. 
+
+##### Age
+
+In examining the data and the MIMIC-III metadata/documentation, I noticed that `Age` values occur of 301, where patients who were older tha 89 at time of admission have their (randomized) date-of-birth's set to 300+ years prior to their hospital admittance. As dates are randomly jittered I am unable to impute these values using admit or discharge times. As a result, I will set these values to simply 1 year higher than the maximum age (that is less than 300).
+
+
+```r
+admit_pts %>% count(Age) %>% arrange(desc(Age)) %>% head()
+```
+
+```
+##   Age    n
+## 1 301 1991
+## 2  89  133
+## 3  88  439
+## 4  87  496
+## 5  86  592
+## 6  85  589
+```
+
+```r
+admit_pts <- admit_pts %>% 
+  mutate(Age =
+    case_when(Age>100 ~ 90,
+              TRUE ~ Age)
+  )
+
+admit_pts %>% count(Age) %>% arrange(desc(Age)) %>% head()
+```
+
+```
+##   Age    n
+## 1  90 1991
+## 2  89  133
+## 3  88  439
+## 4  87  496
+## 5  86  592
+## 6  85  589
+```
+
+
+##### Mortality 
+
+The MIMIC-III data offers two sources for mortality status (and related date of death):
+  `DOD_HOSP` - In-hospital mortality collected and stored in the hospital's local database
+  `DOD_SSN` - Date of death as obtained from the social security death index (SSDI), which includes deaths up to 4-years post-discharge
+  
+Both of these variables are aggregated into a generic `DOD` variable of date of death, which prioritizes `DOD_HOSP` if both sources have a recorded date of death. In presenting this data to the Capstone committee, we had decided to use "in-hospital mortality", and I planned to simply use the `DOD_HOSP` variable. However I noticed that among patients with multiple visits, `DOD_HOSP` would capture in-hospital mortality at a later visit (and not the visit of interest which we've discussed and isolated). Therefore I will use the generic `DOD` variable, and identify in-hospital mortality as present for any patient with a DOD date equal to or less than their discharge date. Otherwise, in-hospital mortality will be set as surviving the patient's stay.  
+  
+One detail I will include is that I will *not* consider time differences when assessing this difference. I will simply see if the date of death `DOD` and time of discharge `DISCHTIME` are the same year-month-date or if `DOD` is less than `DISCHTIME`. Lastly, there are patients whose `DOD` is immediately greater than their `DISCHTIME`. As a buffer, I will consider in-patient mortality as present or patients as expiring during their stay if `DOD` is within 24 hours of `DISCHTIME`. 
+
+
+
+```r
+admit_pts %>% 
+  filter(DOD!="" & as.Date(ymd_hms(DOD))!=as.Date(ymd_hms(DISCHTIME))) %>% 
+  select(SUBJECT_ID, Age, DOD, DISCHTIME) %>% sample_n(5)
+```
+
+```
+##   SUBJECT_ID Age                 DOD           DISCHTIME
+## 1      47980  73 2105-01-06 00:00:00 2104-10-11 10:40:00
+## 2      17586  84 2177-09-01 00:00:00 2177-08-04 17:15:00
+## 3       9619  82 2180-02-16 00:00:00 2179-02-10 17:30:00
+## 4      14922  85 2125-04-13 00:00:00 2122-12-04 14:17:00
+## 5      11235  39 2194-05-30 00:00:00 2193-04-03 20:15:00
+```
+
+```r
+  # Examinign random patients with disparate `DOD` and `DISCHTIME` values
+  
+
+admit_pts %>%
+  filter(DOD!="" & as.Date(ymd_hms(DOD))>as.Date(ymd_hms(DISCHTIME)))  %>%
+  mutate(dodlag = as.integer(difftime(DOD, DISCHTIME, unit="hours"))) %>%  
+  arrange(dodlag) %>% head()
+```
+
+```
+##   SUBJECT_ID Age                 DOD GENDER HADM_ID           ADMITTIME
+## 1       9998  58 2173-06-15 00:00:00      M  144947 2173-06-11 11:39:00
+## 2      24524  76 2167-01-04 00:00:00      F  129446 2166-11-14 15:44:00
+## 3      53279  90 2200-09-14 00:00:00      F  127691 2200-09-09 22:47:00
+## 4      58940  47 2198-01-17 00:00:00      M  129487 2198-01-11 21:33:00
+## 5      87758  47 2179-08-11 00:00:00      F  191495 2179-08-08 13:53:00
+## 6      97263  57 2122-01-21 00:00:00      M  164631 2122-01-15 22:31:00
+##             DISCHTIME INSURANCE dodlag
+## 1 2173-06-14 22:00:00   Private      2
+## 2 2167-01-03 21:31:00  Medicare      2
+## 3 2200-09-13 21:27:00  Medicare      2
+## 4 2198-01-16 20:13:00  Medicaid      3
+## 5 2179-08-10 20:39:00   Private      3
+## 6 2122-01-20 20:30:00   Private      3
+```
+
+```r
+  # Examining some of the differences in time that are small between DOD and DISCHTIME
+
+
+admit_pts <- admit_pts %>% 
+  mutate(InHospMortality =
+           case_when(
+             DOD!="" & as.Date(ymd_hms(DOD)) <= as.Date(ymd_hms(DISCHTIME)) ~ 1,
+             DOD!="" & as.integer(as.Date(ymd_hms(DOD)) - as.Date(ymd_hms(DISCHTIME)))<=24 ~ 1,
+             TRUE ~ 0
+           ))
+```
+
+
+
+##### Payment/Insurance
+
+
+```r
+admit_pts %>% count(INSURANCE)
+```
+
+```
+##    INSURANCE     n
+## 1 Government  1163
+## 2   Medicaid  3169
+## 3   Medicare 20433
+## 4    Private 13243
+## 5   Self Pay   546
+```
+
+The `Self Pay` category is (comparatively) somewhat small, but as of now I don't think there is any need to collapse these groups considerign even this small proportion is nearly 550 observations.  
+  
+  
+##### General Hospital Length of Stay 
+
+
+```r
+admit_pts <- admit_pts %>% 
+  mutate(HospitalLOS =
+           floor(as.numeric(difftime(DISCHTIME, ADMITTIME, unit="days"))))
+```
+
+
+##### Hospital Re-admission
+
+For re-admission, I will explore whether to use 30-day or 90-day readmission. I found literature using both as "short-term" and "early-" hospital readmission. I will also specifically look at emergency/urgent readmission (not elective). 
+
+
+```r
+readmit_dts <- admit %>% filter(ADMISSION_TYPE %in% c("EMERGENCY", "URGENT") & # filtering out elective admissions 
+                   admit$SUBJECT_ID %in% c(admit_pts %>% select(SUBJECT_ID))[[1]]) %>%  # identifying only patients in our analytic cohort
+  group_by(SUBJECT_ID) %>% filter(ADMITTIME!=min(ADMITTIME)) %>% # removing our index visits 
+  filter(ADMITTIME==min(ADMITTIME)) %>% ungroup() %>%  # now saying give me the admittime closest to your index admittance
+  select(SUBJECT_ID, ReadmitDate=ADMITTIME) # finally, simply selecting the SUBJECT_ID and readmitdate 
+
+admit_pts <- merge(admit_pts,readmit_dts, by="SUBJECT_ID", all.x=T)  %>% 
+  mutate(TimeToReadmit = 
+           case_when(
+             !is.na(ReadmitDate) ~ as_date(ReadmitDate) - as_date(ADMITTIME),
+             TRUE ~ NA_real_
+             )
+         ) 
+```
+
+I have identified our time to hospital readmission, but have not examined or limited the data. Let's first visualize the distribution:
+
+
+```r
+admit_pts %>% filter(!is.na(TimeToReadmit)) %>% 
+  ggplot(aes(x=TimeToReadmit)) +
+  geom_density() + theme_minimal() +
+  xlab("Days to Hospital Readmission") + ylab("Density") +
+  ggtitle("Density Curve of Days to Unplanned/Emergent Readmission") +
+  geom_vline(aes(xintercept=30, color="30 Days"), alpha=0.4,  lwd=1.2, lty=2)  +  
+  geom_vline(aes(xintercept=90, color="90 Days"), lwd=1.2, lty=2, alpha=0.4,) +
+  geom_vline(aes(xintercept=365, color="365 Days"), lwd=1.4, lty=2) +
+  scale_color_manual(name="Days to Readmission",
+                     values=c(`30 Days`="red", `90 Days`="blue", `365 Days`="lightblue")) +
+  theme(legend.position=c(0.72, 0.5), legend.box.margin = margin(6, 6, 6, 6))
+```
+
+```
+## Don't know how to automatically pick scale for object of type difftime. Defaulting to continuous.
+```
+
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-10-1.png)<!-- -->
+
+
+This distribution looks very skewed. I added lines to the 30 and 90 days marks, as I was interested in these benchmarks, but I can't fully assess possible sample size of this group while excluding no readmission (from the above `filter` statement) and from a density curve. Below is a frequency table:  
+  
+
+```r
+admit_pts %>% mutate(ReadmitCats = 
+                       case_when(
+                 is.na(TimeToReadmit)  ~ "No readmit",
+                 TimeToReadmit >= 350 ~ "Greater than 1 year",
+                 TimeToReadmit >= 90 ~ "From 90 to 365 days",
+                 TimeToReadmit >= 30 ~ "30-90 days",
+                 TRUE ~ "0-30 days"
+               )) %>% count(ReadmitCats)
+```
+
+```
+##           ReadmitCats     n
+## 1           0-30 days   975
+## 2          30-90 days  1178
+## 3 From 90 to 365 days  1322
+## 4 Greater than 1 year  2243
+## 5          No readmit 32836
+```
+
+From the above table, with fairly low frequencies for the 0-30 and 30-90 days ranges alone, I will use readmission with the following calendar year (i.e. next 365 days). Within this chunk, we will also limit the analytic cohort specific to readmission variable. 
+
+I will ensure that the readmit variable `Yr1Readmit` is only calculated for patients who survived out to one year (i.e. `DOD`-`DISCHTIME`$\leq$ 365 days). When examining readmission, we should only include those patients who 1) survived out to one year (regardless of readmission status) and 2) among patients who died, patients who were readmitted within one year prior to their date of death:  
+  
+
+```r
+admit_pts <- admit_pts %>% mutate(TimeToMort = 
+                                    case_when(
+                                      DOD!="" ~ as.Date(ymd_hms(DOD)) - as.Date(ymd_hms(DISCHTIME)),
+                                      TRUE  ~ 9999
+                                      ), 
+                                  Yr1Readmit =
+                                    case_when(
+                                      TimeToMort>365 & TimeToReadmit<=365 ~ 1, 
+                                      TimeToMort>365 ~ 0,
+                                      TRUE ~ NA_real_
+                                      ),
+                                  TimeToReadmit_Recalc = # if we do a time-to-event analysis, including this recalculated variable 
+                                    case_when(
+                                      TimeToReadmit<=365 ~ TimeToReadmit,
+                                      TRUE ~ 366
+                                      )
+                                  ) #%>% select(-ReadmitDate, -TimeToReadmit)
+```
+
+
+ A parting parting note to self for this data element, whenever I wanted to check my data cleaning, I was tempted to compare the number of `SUBJECT_ID`'s with more than one `HADM_ID` in our raw  `ADMISSIONS` table to the numbe rof patients with a missing `TimeToReadmit` value. I have to remember, however, that I removed elective admissions form the `TimeToReadmit` calculation, so these values will **not** be equivalent.
+
+
+
+
 
 ### Diagnoses Codes
 
-#### Import & Validity Check
+Now that we have cleaned our patient-level data elements, we can begin working with the diagnosis code data. This will include:  
+    1. Removal of V and E diagnoses codes related to health factors and causes of admission respectively outside of morbidity diagnosis
+    2. Ensuring the validity of our ICD-9 codes through a definition check and a quick spot-check of gender-specific codes 
+    3. Limiting our diagnoses codes to only those that met our prevalence threshold of 1%
 
 
-```r
-icd_raw <- read.csv(icd_fp, stringsAsFactors = F) %>% select(-ROW_ID)
+#### Imports
 
-icd_raw %>% nrow()
-```
 
-```
-## [1] 651047
-```
 
 ```r
-icd_raw %>% distinct(SUBJECT_ID) %>% nrow()
+icd_raw <- read.csv(here("Data", "Raw", "DIAGNOSES_ICD.csv"), stringsAsFactors = F) %>% select(-ROW_ID)
+
+cat("There are", icd_raw %>% nrow(), "rows in our raw, ICD-9 diagnosis code data.\n")
 ```
 
 ```
-## [1] 46520
+## There are 651047 rows in our raw, ICD-9 diagnosis code data.
 ```
 
 ```r
-icd_raw %>% distinct(ICD9_CODE) %>% nrow()
+cat("There are", icd_raw %>% distinct(SUBJECT_ID) %>% nrow(), "unique `SUBJECT_ID` values (representign patients) in this data.\n")
 ```
 
 ```
-## [1] 6985
+## There are 46520 unique `SUBJECT_ID` values (representign patients) in this data.
 ```
 
+```r
+cat("Lastly, there are", icd_raw %>% distinct(ICD9_CODE) %>% nrow(), "distinct ICD-9 diagnosis codes in this data set.")
+```
 
-In our very introductory exploration of the data, we see that the MIMIC-III diagnoses code data contains 6,985 unique ICD-9 codes among 46,520 patients. The diagnoses table in total includes 651,047 rows, with each row being a unique diagnoses for a given patient and visit. Before working with the diagnosis data, we want to do some preliminary cleaning. I will first remove any duplicated diagnoses codes within a patient *and* visit. I will also remove the V and E codes which correspond to Health Services/Factors and Causes of Injury/Illness respecively, separate from diagnoses. 
+```
+## Lastly, there are 6985 distinct ICD-9 diagnosis codes in this data set.
+```
+
+  
+##### Removing V & E Codes  
+
+I will first remove any duplicated diagnoses codes within a patient *and* visit. I will also remove the V and E codes which correspond to Health Services/Factors and Causes of Injury/Illness respectively, separate from diagnoses. 
+
 
 
 ```r
 icd_precln <- icd_raw %>% distinct(SUBJECT_ID, HADM_ID, ICD9_CODE, .keep_all = T) %>% 
   filter(substring(ICD9_CODE, 1, 1)!="E" & substring(ICD9_CODE, 1, 1)!="V") #removing V and E codes
 
-icd_precln %>% head()
+icd_precln %>% sample_n(5)
 ```
 
 ```
 ##   SUBJECT_ID HADM_ID SEQ_NUM ICD9_CODE
-## 1        109  172335       1     40301
-## 2        109  172335       2       486
-## 3        109  172335       3     58281
-## 4        109  172335       4      5855
-## 5        109  172335       5      4254
-## 6        109  172335       6      2762
+## 1      80260  110601      13      4550
+## 2      68533  149460       8      2851
+## 3      22098  133065       1      7802
+## 4        629  151847       2     25051
+## 5      58433  168527       8     45829
 ```
+
+##### Checking Code Definitions
 
 Using the `icd` package's built-in `is_defined` function, which tests whether a given input value 1) follows valid formatting for an ICD-9 code (5 or less characters, numeric or alphanumeric for V, E codes (which we've excluded)) and 2) is defined using a call to CMS, which keeps a list of what the package refers to as "canonical" ICD-9 codes:
 
@@ -98,105 +463,115 @@ icd_precln %>% mutate(valid = is_defined(ICD9_CODE)) %>% filter(valid==F & ICD9_
 ## <0 rows> (or 0-length row.names)
 ```
 
-Thankfully all our codes are valid/defined! We also know that within this data, the same patient (i.e. same `SUBJECT_ID`) may have multiple admissions (i.e. multiple `HADM_ID`'s). I will look now at the patients for which this happens. My current thought (and "solution") is to simply retain the most recent visit, believing that this most accurately reflects a patient's disease progression and current diagnoses. 
+
+##### Gender Code Spot-Check
+
+Although we will note exhaustively examine ICD-9 codes that may be mutually exclusive or gender-specific, we can spot check some large ranges of these codes to re-assure ourselves of the data's validity.
+
+ICD-9 codes ranging from 600 to 608 are specific to males, so we can spot-check to see if any female patients were erroneously diagnosed with these codes:
+
+
+```r
+icd_precln %>% filter(ICD9_CODE>="6000" & ICD9_CODE<"6090") %>% 
+  merge(pts_raw, by="SUBJECT_ID") %>% count(GENDER)
+```
+
+```
+##   GENDER    n
+## 1      M 2320
+```
+
+And we can perform a similar check using female-specific codes ranging from 614 to 629:
+
+
+```r
+icd_precln %>% filter(ICD9_CODE>="6140" & ICD9_CODE<"6300") %>% 
+  merge(pts_raw, by="SUBJECT_ID") %>% count(GENDER)
+```
+
+```
+##   GENDER   n
+## 1      F 577
+```
+
+Thankfully our spot checks appear to corroborate the ICD-9 data validity! 
+
+
+##### Limiting to Our Cohort
+
+We must first limit our ICD data to only those patients/visits of interest for our analysis, which we have thankfully already cleaned and can simply use as a merging "limiter":  
 
 
 
 ```r
-icd_precln %>% distinct(SUBJECT_ID, HADM_ID, .keep_all = T) %>% arrange(SUBJECT_ID) %>% group_by(SUBJECT_ID) %>% count() %>% filter(n>1)
+icd_cohort <- admit_pts %>% select(SUBJECT_ID, HADM_ID) %>%  
+  merge(icd_precln, by=c("SUBJECT_ID", "HADM_ID"), all.x=T) %>% select(-SEQ_NUM)
 ```
 
-```
-## # A tibble: 7,479 x 2
-## # Groups:   SUBJECT_ID [7,479]
-##    SUBJECT_ID     n
-##         <int> <int>
-##  1         17     2
-##  2         21     2
-##  3         23     2
-##  4         34     2
-##  5         36     3
-##  6         61     2
-##  7         67     2
-##  8         68     2
-##  9         84     2
-## 10         85     2
-## # ... with 7,469 more rows
-```
 
-We see that a sizeable proportion of this patient population (7,479 patients of the ~46,000 we first identified) have multiple `HADM_ID` values. I will import the `ADMISSIONS` table to pull in the `ADMITTIME` variable.
+#### Subsetting by Prevalence
 
-###### Identifying Patients with Multiple Stays
+Now we will finalize our diagnosis by subsetting our diagnoses codes to those with a minimum of 1% event rate in our cohort. The relatively large number of unique diagnoses codes contain a number of rare diseases, with extremely low variance. As a result, we will truncate to codes with a sufficiently high proportion or event rate:
 
 
 ```r
-admit <- read.csv(paste0(lib, "ADMISSIONS.csv"))
+icd_1pct <- icd_cohort %>% count(ICD9_CODE) %>% filter(n>(0.01*nrow(admit_pts))) %>% pull(ICD9_CODE)
 
-icd_raw_nodups <- admit %>% select(HADM_ID, ADMITTIME) %>%  merge(., icd_precln, by="HADM_ID", all.y=T) %>%  group_by(SUBJECT_ID) %>% 
-  filter(ADMITTIME==max(ADMITTIME)) %>% ungroup()
-
-icd_raw_nodups %>% distinct(SUBJECT_ID, HADM_ID, .keep_all = T) %>% arrange(SUBJECT_ID) %>% group_by(SUBJECT_ID) %>% count() %>% filter(n>1)
+icd_cohort <- icd_cohort %>% mutate(ICD9_CODE = 
+                           case_when(
+                             ICD9_CODE %in% icd_1pct ~ ICD9_CODE,
+                             TRUE ~ NA_character_)
+                           ) %>% distinct(SUBJECT_ID, HADM_ID, ICD9_CODE) 
 ```
 
-```
-## # A tibble: 0 x 2
-## # Groups:   SUBJECT_ID [0]
-## # ... with 2 variables: SUBJECT_ID <int>, n <int>
-```
-
-```r
-data.frame(
-Data_Frame=c("icd_raw_nodups", "icd_precln"),
-
-Unique_Patients = c(icd_raw_nodups %>% distinct(SUBJECT_ID) %>% nrow(),
-                    icd_precln %>% distinct(SUBJECT_ID) %>% nrow()),
-Unique_Visits = c(icd_raw_nodups %>% distinct(HADM_ID) %>% nrow(),
-                  icd_precln %>% distinct(HADM_ID) %>% nrow()),
-Rows=c(icd_raw_nodups  %>% nrow(),
-       icd_precln %>% nrow())
-)
-```
-
-```
-##       Data_Frame Unique_Patients Unique_Visits   Rows
-## 1 icd_raw_nodups           44319         44319 417679
-## 2     icd_precln           44319         56716 553742
-```
-
-We can now see we've eliminated duplicate stays by filtering such that the visit's admittance time `ADMITTIME` must be the maximum within a given patient (`SUBJECT_ID`). I also check/demonstrate in the final two lines of the above chunk that the same number of patients are retained in this "no dups" (for no duplicates) data frame. But a much smaller number of rows and unique visits are retained.
 
 
-#### EDA of Diagnoses Codes 
+### Data Cleaning Concluding Notes
 
-##### Diagnosis Frequency
+The above data wrangling corresponds to the inclusion, validity-checking, and coding of data for categories to be considered analysis. This data cleaning code does *not* perfectly prepare data for analysis. Treelet dimension reduction will require the calculation and input of a correlation and/or variance-covariance matrix, while modelling or descriptive analysis may require coercion of data elements to/from factors and integers or other coding changes. These small changes, which will change the structure of the data but not the content or information contained therein, are left as *ad hoc* programming done within each relevant analytic section. 
 
-Examining simply the most common diagnoses codes, arbitrarily picking the top 15 for legibility of plots. 
+
+## EDA 
+
+### Diagnosis Code Data 
+
+
+#### Diagnosis Frequency
+
+We can look broadly at the frequency of all of our diagnoses codes, with the below plot simply arranged in descending order:
 
 
 ```r
-icd_counts <- icd_raw_nodups %>% group_by(ICD9_CODE) %>% count() %>% arrange(desc(n))
-```
-
-
-##### Graphing Top 15 Most Common Diagnoses
-
-
-```r
-icd_descr <- read.csv(paste0(lib, "D_ICD_DIAGNOSES.csv"))
-top_codes <- merge(icd_counts, icd_descr, by="ICD9_CODE", all.x=T) %>% arrange(desc(n)) %>% ungroup() %>%  filter(row_number()<=15)
-
-
-ggplot(top_codes, aes(x=reorder(SHORT_TITLE, -n), y=n)) +
-  geom_bar(stat="identity", fill="navyblue", alpha=0.65) +
-  ggtitle("Frequency of the 15 Most Common Diagnoses", 
-          subtitle = paste("n=", nrow(icd_raw_nodups), 
+icd_cohort %>% count(ICD9_CODE)  %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE)) %>%
+  ggplot(aes(x=reorder(ICD9_CODE, -n), y=n)) +
+    geom_bar(stat="identity", fill="navyblue", alpha=0.65) +
+    ggtitle("Frequency Plot of All Diagnoses Codes", 
+          subtitle = paste("(Including only codes with 1% prevalence or greater)\nn=", nrow(icd_cohort %>% count(ICD9_CODE)), 
                            " unique diagnoses, among", 
-                           length(unique(icd_raw_nodups$SUBJECT_ID)), "patients")) + 
-  ylab("Frequency") + xlab("ICD-9 Code") + theme_minimal() +
-  theme(axis.text.x=element_text(angle=80, vjust=0.9, hjust=0.8))
+                           nrow(admit_pts), "patients")) + 
+    ylab("Frequency") + xlab("Distinct (Unlabelled) ICD-9 Codes") + theme_minimal() +
+    theme(axis.text.x=element_blank())
 ```
 
-![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-9-1.png)<!-- -->
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-21-1.png)<!-- -->
+
+
+As it is impossible to elucidate much useful information from this visual, due to the volume of data, we can examine simply the most common diagnoses codes, arbitrarily picking the top 15 for legibility of plots:
+
+
+```r
+icd_descr <- read.csv(here("Data", "Raw", "D_ICD_DIAGNOSES.csv"))
+
+icd_cohort %>% count(ICD9_CODE) %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE)) %>% 
+  merge(icd_descr, by="ICD9_CODE", all.x=T) %>% arrange(desc(n)) %>% ungroup() %>%  filter(row_number()<=15) %>% 
+  ggplot(aes(x=reorder(SHORT_TITLE, -n), y=n)) +
+    geom_bar(stat="identity", fill="navyblue", alpha=0.65) +
+    ggtitle("Frequency of the 15 Most Common Diagnoses") + 
+    ylab("Frequency") + xlab("ICD-9 Code") + theme_minimal() +
+    theme(axis.text.x=element_text(angle=60, vjust=0.9, hjust=0.8))
+```
+
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-22-1.png)<!-- -->
 
 ```r
     # this is a really unfortunately x-axis, couldn't find a better angle or adjustment for the x-axis unfortunately 
@@ -204,275 +579,329 @@ ggplot(top_codes, aes(x=reorder(SHORT_TITLE, -n), y=n)) +
 
 
 
-##### Correlation Matrix Among Top Diagnoses
+#### Correlation Matrix Among Top Diagnoses
 
-Looking at the correlation matrix of these most common diagnoses codes (as the correlation of diagnoses is what will determine the hierarchy of clustering in the treelet method):
-
-
-```r
-wide <- icd_raw_nodups %>% filter(ICD9_CODE %in% top_codes[1][[1]]) %>% mutate(values=1) %>% pivot_wider(id_cols="SUBJECT_ID", names_from="ICD9_CODE", values_from="values")
-wide[is.na(wide)] <- 0
-
-wide %>% select(-SUBJECT_ID) %>% cor() %>%  corrplot::corrplot(type="upper", diag=F, order="hclust")
-```
-
-![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-10-1.png)<!-- -->
-
-
-I had initially hoped to explore the most highly correlated diagnoses codes among all diagnoses. However the size of this data frame became fairly intractable for my computer, and I was not able to estimate a correlation matrix for all diagnoses codes. I've then been exploring additional ways to aggregate/subset diagnoses codes prior to dimension reduction based on either  
-  1. Prevalence in the data set (with a low threshold to inclusion)  
-  2. Previously published grouping algorithms (i.e. Elixhauser)  
-  3. ICD-9's somewhat implicit structure of coding  
-
-#### Prevalence of >1%
-
-Here I simply slice the diagnoses codes to only include diagnoses present in at least 1% of our patients:
-
-
-```r
-pct_cutoff <- length(unique(icd_raw_nodups$SUBJECT_ID))*0.01
-pct_cutoff_codes <- merge(icd_counts, icd_descr, by="ICD9_CODE", all.x=T) %>% arrange(desc(n)) %>% ungroup() %>%  filter(n>=pct_cutoff)
-```
-
-
-```r
-prev_wide <- icd_raw_nodups %>% filter(ICD9_CODE %in% pct_cutoff_codes[1][[1]]) %>% mutate(values=1) %>% pivot_wider(id_cols="SUBJECT_ID", names_from="ICD9_CODE", values_from="values")
-prev_wide[is.na(prev_wide)] <- 0
-
-corr_mat <- cor(prev_wide)
-corr_mat[abs(corr_mat)>0.3 & abs(corr_mat)!=1] # printing only a subset to see if there are any highly correlated variables
-```
-
-```
-##  [1] 0.3230168 0.3230168 0.4911920 0.6132118 0.3418081 0.6065727 0.5288702
-##  [8] 0.4046031 0.4353799 0.4222282 0.5670920 0.3374261 0.3418081 0.3144627
-## [15] 0.4474047 0.7011283 0.3457130 0.7011283 0.3361047 0.3144627 0.5725083
-## [22] 0.5725083 0.6065727 0.4252590 0.3748477 0.4932475 0.5288702 0.4252590
-## [29] 0.4218611 0.4888356 0.3617305 0.6512039 0.3617305 0.4092391 0.7690218
-## [36] 0.7690218 0.3886728 0.3361047 0.6512039 0.3886728 0.4911920 0.7447449
-## [43] 0.6132118 0.7447449 0.3402869 0.4046031 0.3529470 0.3046853 0.3595060
-## [50] 0.3457130 0.4353799 0.4474047 0.4222282 0.3748477 0.4218611 0.6050777
-## [57] 0.5670920 0.4932475 0.4888356 0.3529470 0.6050777 0.3196800 0.3077870
-## [64] 0.3196800 0.3005606 0.3077870 0.3005606 0.3595060 0.4092391 0.3402869
-## [71] 0.3046853 0.7900441 0.3374261 0.7900441
-```
+Looking at the correlation matrix of these most common diagnoses codes (as the correlation of diagnoses is what will determine the hierarchy of clustering in the treelet method):  
   
 
-#### Generating Elixhauser Group
+```r
+icd_cohort %>% filter(!is.na(ICD9_CODE) & ICD9_CODE %in% (
+        icd_cohort %>% count(ICD9_CODE) %>% 
+        arrange(desc(n)) %>%
+        merge(icd_descr, by="ICD9_CODE", all.x=T) %>% 
+        arrange(desc(n)) %>% 
+        ungroup() %>%  
+        filter(row_number()<=15) %>% pull(ICD9_CODE)
+        )) %>%
+  mutate(values=1) %>% 
+  pivot_wider(id_cols="SUBJECT_ID", names_from="ICD9_CODE", values_from="values") %>% 
+  mutate_all(function(x) ifelse(is.na(x), 0, x))  %>% 
+  select(-SUBJECT_ID) %>% 
+  cor() %>%  
+  corrplot::corrplot(type="upper", diag=F, order="hclust", method = "shade")
+```
 
-Here I simply use the `comorbidity` function from the eponymous package to generate Elixhauser categories. The function generates 30 Elixhauser membership variables and additional variables related to a scoring or indexing system based upon these Elixhauser category memberships. Values of `1` represent membership in an Elixhauser category (i.e. a present ICD-9 diagnosis code for that categorie's relevant codes) and 0 representing no membership (i.e. no relevant codes recorded for a given patient). 
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-23-1.png)<!-- -->
+
+
+#### Correlation Matrix Among All Included ($1% \geq$ Prevalence) Codes
+
+
+```r
+x <- (icd_cohort %>% 
+  mutate(values=1) %>% 
+  pivot_wider(id_cols="SUBJECT_ID", names_from="ICD9_CODE", values_from="values") %>% 
+  mutate_all(function(x) ifelse(is.na(x), 0, x))  %>% 
+  select(-SUBJECT_ID) %>% 
+  cor())
+
+x[x>1] <- 1
+x %>% corrplot::corrplot(type="upper", diag=F, order="hclust", method = "shade", tl.pos = "n")
+```
+
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-24-1.png)<!-- -->
+
+
+
+#### Most Correlated Diagnoses
+In addition to the `corrplot` package's visualiation of an input correlation matrix, we can use the `corr_cross` package to examine the upper limit of our diagnoses code's correlations. In the plot below, "Correlation %" simply refers to the scaled correlation coefficient (e.g. a "Correlation %" of 89.45% corresponds to a correlation coefficient $\rho=0.8945$):
 
 
 
 ```r
-icd_elix <- comorbidity(icd_raw_nodups, id = "SUBJECT_ID", code = "ICD9_CODE", score = "elixhauser", icd = "icd9", assign0 = F) %>% 
-  select(-c(index, score, starts_with("wscore"), starts_with("windex"))) 
-# removing aggregate variables of Charlson scoring that this function generates based on several different methods/publications 
-icd_elix %>% head()
+top10_corr_plot <- icd_cohort %>% 
+  filter(!is.na(ICD9_CODE)) %>% 
+  mutate(values=1) %>% 
+  pivot_wider(id_cols="SUBJECT_ID", names_from="ICD9_CODE", values_from="values") %>% 
+  mutate_all(function(x) ifelse(is.na(x), 0, 1)) %>% 
+  select(-SUBJECT_ID) %>% 
+  corr_cross(top=10)
 ```
 
 ```
-##   SUBJECT_ID chf carit valv pcd pvd hypunc hypc para ond cpd diabunc diabc
-## 1          3   1     0    0   0   0      0    0    0   0   0       0     0
-## 2          4   0     0    0   0   0      0    0    0   0   0       0     0
-## 3          6   0     0    0   0   0      0    1    0   0   0       0     0
-## 4          8   0     0    0   0   0      0    0    0   0   0       0     0
-## 5          9   1     0    0   0   0      1    0    0   0   0       0     0
-## 6         10   0     0    0   0   0      0    0    0   0   0       0     0
-##   hypothy rf ld pud aids lymph metacanc solidtum rheumd coag obes wloss fed
-## 1       0  0  0   0    0     0        0        0      0    0    0     1   0
-## 2       0  0  1   0    1     0        0        0      0    0    0     1   1
-## 3       0  1  0   0    0     0        0        0      0    0    0     0   1
-## 4       0  0  0   0    0     0        0        0      0    0    0     0   0
-## 5       0  0  0   0    0     0        0        0      0    0    0     0   1
-## 6       0  0  0   0    0     0        0        0      0    0    0     0   0
-##   blane dane alcohol drug psycho depre
-## 1     0    0       0    0      0     0
-## 2     0    0       0    0      0     0
-## 3     0    0       0    0      0     0
-## 4     0    0       0    0      0     0
-## 5     0    0       0    0      0     0
-## 6     0    0       0    0      0     0
+## Returning only the top 10. You may override with the `top` parameter
 ```
 
 ```r
-cat("Rows in Elixhauser output: ", nrow(icd_elix), " // Unique subject ID's in input data:", length(unique(icd_raw_nodups$SUBJECT_ID)),
-    "\nNote: Values should be equal")
+top10_corr_plot
 ```
 
-```
-## Rows in Elixhauser output:  44319  // Unique subject ID's in input data: 44319 
-## Note: Values should be equal
-```
-
-
-###### Graphing Group Frequency
-
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-25-1.png)<!-- -->
+  
+And then examine a matrix-plot of these diagnoses as well:  
+  
 
 ```r
-summary <- data.frame()
+top_corr_vars <- c(top10_corr_plot$data %>% mutate(vars=substr(key, 2, nchar(key))) %>% pull(vars), 
+                   top10_corr_plot$data %>% mutate(vars=substr(mix, 2, nchar(mix))) %>% pull(vars)) %>% unique()
+                     
 
-for (i in 2:ncol(icd_elix)){
-  summary[i-1, "Freq"] <- sum(icd_elix[,i])  
-  summary[i-1, "Group"] <- colnames(icd_elix)[i]
-}
-
-
-ggplot(summary, aes(x=reorder(Group, -Freq), y=Freq)) +
-  geom_bar(stat="identity", fill="navyblue", alpha=0.65) +
-  ggtitle("Frequency of the 30 Elixhauser Comorbidity Groups") + 
-  ylab("Frequency") + xlab("Elixhauser Comorbidity Group") + theme_minimal() + theme(axis.text.x=element_text(angle=80, vjust=0.955))
+icd_cohort %>% 
+  filter(!is.na(ICD9_CODE)) %>% 
+    mutate(values=1) %>% 
+    pivot_wider(id_cols="SUBJECT_ID", names_from="ICD9_CODE", values_from="values") %>% 
+    mutate_all(function(x) ifelse(is.na(x), 0, 1)) %>% 
+    select(!!!top_corr_vars) %>% cor() %>% 
+      corrplot::corrplot(type="upper", diag=F, order="hclust", method = "shade")
 ```
 
-![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-14-1.png)<!-- -->
-
-```r
-    # this is a really unfortunately x-axis, couldn't find a better angle or adjustment for the x-axis unfortunately 
-```
-
-
-###### Elixhauser Correlation Matrix
-
-
-```r
-icd_elix %>% select(-SUBJECT_ID) %>% cor() %>% corrplot::corrplot(type="upper", diag=F, order="hclust")
-```
-
-![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-15-1.png)<!-- -->
-
-
-### Using ICD-9's Implicit Structure
-
-Coding my own "grouping" of codes based on the ICD-9's existing coding of data. 
-
-
-```r
-icd_dom_recode <-  icd_raw_nodups %>% mutate(Group=
-                            case_when(
-                              ICD9_CODE!="" & ICD9_CODE<"14000" ~ "Infections",
-                              ICD9_CODE>="14000" & ICD9_CODE<"24000" ~ "Neoplasms",
-                              ICD9_CODE>="24000" & ICD9_CODE<"28000" ~ "Endocrine",
-                              ICD9_CODE>="28000" & ICD9_CODE<"29000" ~ "Blood Disorders",
-                              ICD9_CODE>="29000" & ICD9_CODE<"32000" ~ "Mental Disorders",
-                              ICD9_CODE>="32000" & ICD9_CODE<"39000" ~ "Nervous System",
-                              ICD9_CODE>="39000" & ICD9_CODE<"46000" ~ "Circulatory",
-                              ICD9_CODE>="46000" & ICD9_CODE<"52000" ~ "Respiratory",
-                              ICD9_CODE>="52000" & ICD9_CODE<"58000" ~ "Digestive",
-                              ICD9_CODE>="58000" & ICD9_CODE<"63000" ~ "Geniotourinary",
-                              ICD9_CODE>="63000" & ICD9_CODE<"68000" ~ "Pregnancy and Childbirth",
-                              ICD9_CODE>="68000" & ICD9_CODE<"71000" ~ "Skin and Tissue",
-                              ICD9_CODE>="71000" & ICD9_CODE<"74000" ~ "Musculoskeletal",
-                              ICD9_CODE>="74000" & ICD9_CODE<"76000" ~ "Congenital",
-                              ICD9_CODE>="76000" & ICD9_CODE<"78000" ~ "Perinatal Conditions",
-                              ICD9_CODE>="78000" & ICD9_CODE<"80000" ~ "Ill-Defined",
-                              ICD9_CODE>="80000" & ICD9_CODE<"99999" ~ "Injury and Poisoning",
-                            ))
-
-icd_dom_recode %>% filter(!is.na(Group)) %>% count(Group) %>% arrange(desc(n))
-```
-
-```
-## # A tibble: 17 x 2
-##    Group                         n
-##    <chr>                     <int>
-##  1 Circulatory              104783
-##  2 Endocrine                 51539
-##  3 Injury and Poisoning      34459
-##  4 Respiratory               33041
-##  5 Digestive                 28107
-##  6 Geniotourinary            23479
-##  7 Ill-Defined               22590
-##  8 Perinatal Conditions      19482
-##  9 Mental Disorders          18969
-## 10 Blood Disorders           17778
-## 11 Nervous System            17283
-## 12 Infections                14532
-## 13 Neoplasms                 11163
-## 14 Musculoskeletal            9784
-## 15 Skin and Tissue            6434
-## 16 Congenital                 3604
-## 17 Pregnancy and Childbirth    612
-```
-
-```r
-# icd_dom_recode_wide <-
-
-icd_dom_recode_wide <- icd_dom_recode %>% filter(!is.na(Group)) %>% group_by(SUBJECT_ID, Group) %>% distinct(SUBJECT_ID, Group, .keep_all = T) %>% ungroup() %>% mutate(values=1) %>% select(SUBJECT_ID, Group, values) %>% pivot_wider(id_cols="SUBJECT_ID", names_from="Group", values_from="values")
-
-icd_dom_recode_wide[is.na(icd_dom_recode_wide)] <- 0
-```
-
-
-```r
-summary_dom <- data.frame()
-
-for (i in 2:ncol(icd_dom_recode_wide)){
-  summary_dom[i-1, "Freq"] <- sum(icd_dom_recode_wide[,i])  
-  summary_dom[i-1, "Group"] <- colnames(icd_dom_recode_wide)[i]
-}
-
-
-ggplot(summary_dom, aes(x=reorder(Group, -Freq), y=Freq)) +
-  geom_bar(stat="identity", fill="navyblue", alpha=0.65) +
-  ggtitle("Frequency of the \"Implicit\" ICD-9 Groups ") + 
-  ylab("Frequency") + xlab("\"Custom\" Comorbidity Group") + theme_minimal() + theme(axis.text.x=element_text(angle=80, vjust=0.62))
-```
-
-![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-17-1.png)<!-- -->
-
-
-```r
-icd_dom_recode_wide %>% select(-SUBJECT_ID) %>% cor() %>% corrplot::corrplot(type="upper", diag=F, order="hclust")
-```
-
-![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-18-1.png)<!-- -->
-
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-26-1.png)<!-- -->
 
 
 
 ### Patient Level Data
 
-In addition to the exploration of the diagnoses codes, I began to aggregate and explore some of what I refer t o as the "patient-level data". That is, data elements corresponding to characteristics of each patient. 
+We can briefly/descriptively examine some of our patient level data, observing frequencies or distributions of our covariates and examining possible relationships of our patient characteristics to mortality, readmission, and hospital length of stay where appropriate. Much of these visualizations were purely exploratory in nature. In instances where data were changed/re-categorized or otherwise altered based on the visualization, I have included comments/annotations. Otherwise, these figures are presented without commentary.
+
+
+#### Mortality 
+
 
 
 ```r
-pts_raw <- read.csv(paste0(lib, "PATIENTS.csv"))
+admit_pts %>% mutate(MortalityType=
+                     factor(case_when(
+                       InHospMortality==1 ~ "In-Hospital Mortality",
+                       TRUE ~ "Survived to Discharge")
+                   )) %>% count(MortalityType) %>% mutate(prop=paste0(round(n/nrow(admit_pts), 4)*100, '%')) %>% 
+  ggplot(aes(x=reorder(MortalityType, -n), y=n, fill=MortalityType, label=prop)) + 
+    geom_text(position = position_dodge(.9),
+              vjust = -0.2,
+              size = 4) +
+  geom_col() + ylab("Frequency") + xlab("Mortality Status") + scale_fill_brewer(palette=2, type = "qual") +
+  ggtitle("Frequency of In-Hospital Mortality Status") + theme_minimal() + theme(legend.position = "none") 
 ```
 
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-27-1.png)<!-- -->
+
+
+##### Payment/Insurance
 
 ```r
-pts_raw %>% count(GENDER) %>% ggplot(aes(x=reorder(GENDER, -n), y=n)) + 
-  geom_bar(stat="identity") + ylab("Frequency") + xlab("Gender") +
-  ggtitle("Frequency of Gender in MIMIC Data")
+admit_pts %>% count(INSURANCE) %>% mutate(prop=paste0(round(n/nrow(admit_pts), 4)*100, '%')) %>% 
+  ggplot(aes(x=reorder(INSURANCE, -n), y=n, fill=INSURANCE, label=prop)) + 
+    geom_text(position = position_dodge(.9),
+              vjust = -0.2,
+              size = 4) +
+  geom_col() + ylab("Frequency") + xlab("Payment Method") + scale_fill_brewer(palette=2, type = "qual") +
+  ggtitle("Frequency of Insurance Status/Payment Method") + theme_minimal() + theme(legend.position = "none") 
 ```
 
-![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-20-1.png)<!-- -->
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-28-1.png)<!-- -->
+
+With the two small groups of `Self Pay` and `Government`, I will contradict what I wrote earlier and collapse these categories. `Self Pay` will be collapsed into the `Private` category, and `Government` will be combined with `Medicaid` as `Medicaid/Non-Medicare Public Assistance`:
+
 
 ```r
-pts_raw %>% mutate(MortalityType=
-                     case_when(EXPIRE_FLAG==0 ~ "Survival",
-                               DOD_HOSP!="" ~ "In-Hospital",
-                               TRUE ~ "Other (SSN)")
-                   )  %>% ggplot(aes(x=as.factor(EXPIRE_FLAG), fill=MortalityType)) + 
-  geom_bar() + ylab("Frequency") + xlab("Mortality Status") + scale_fill_brewer(palette=5, type = "qual") +
-  ggtitle("Frequency of Mortality Status (including Data Source)")
+admit_pts %>% 
+  count(INSURANCE) %>% mutate(prop=paste0(round(n/nrow(admit_pts), 4)*100, '%'), 
+                                 InsuranceBin =
+                                   case_when(
+                                     INSURANCE == "Self Pay" | INSURANCE == "Private" ~ "Private/Self-Pay",
+                                     INSURANCE=='Medicaid' | INSURANCE == 'Government' ~ 'Medicaid/Public Assistance',
+                                     TRUE ~ INSURANCE)) %>% 
+  ggplot(aes(x=reorder(InsuranceBin, -n), y=n, fill=reorder(INSURANCE, n), label=prop)) + 
+  geom_col() + ylab("Frequency") + xlab("Payment Method") + scale_fill_brewer(palette=2, type = "qual") +
+  ggtitle("Frequency of Insurance Status/Payment Method") + theme_minimal() + theme(legend.position = "none") 
 ```
 
-![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-20-2.png)<!-- -->
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-29-1.png)<!-- -->
+
+
+##### General Hospital Length of Stay 
 
 
 ```r
-los_graph <- admit %>% group_by(SUBJECT_ID) %>% filter(ADMITTIME==max(ADMITTIME)) %>% ungroup() %>% 
-  mutate(GenLOS=difftime(DISCHTIME, ADMITTIME, units = "days") %>% as.numeric()) %>% select(SUBJECT_ID, GenLOS, DISCHTIME, ADMITTIME) # %>% 
+los_graph <- admit_pts %>% 
+  mutate(GenLOS=ceiling(difftime(DISCHTIME, ADMITTIME, units = "days") %>% as.numeric())) %>% select(SUBJECT_ID, GenLOS, DISCHTIME, ADMITTIME) # %>% 
   
-los_graph %>%   ggplot(aes(x=GenLOS)) + geom_density() + theme_minimal() +
+los_graph %>%   ggplot(aes(x=GenLOS)) + geom_density(fill="lightblue", alpha=0.4) + theme_minimal() +
   xlab("General Hospital Length of Stay") + ylab("Density") + 
   ggtitle("Distribution of General Hospital Length of Stay (Days)") +
-  annotate(geom="text", x=100, y=0.05, label=paste0("Length of stay values ranged from ", min(los_graph$GenLOS), " to ", max(los_graph$GenLOS), "days.")) +
-  annotate(geom="text", x=114, y=0.04, label=paste0("Our length of stay values have a mean of ", round(mean(los_graph$GenLOS), 2), " and variance \n of ",
+  annotate(geom="text", x=150, y=0.05, label=paste0("Length of stay values ranged from 1 to ", max(los_graph$GenLOS), " days.")) +
+  annotate(geom="text", x=150, y=0.04, label=paste0("Our length of stay values have a mean of ", round(mean(los_graph$GenLOS), 2), " and variance \n of ",
                                                     round(var(los_graph$GenLOS),2), ", suggesting overdispersion of this variable."))
 ```
 
-![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-21-1.png)<!-- -->
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-30-1.png)<!-- -->
+
+We unsurprisingly see a heavy skew in our length of stay data which is highly overdispersed (variance of 113 is more than ~13x greater than our mean of under 10 days).
+ 
+
+##### Hospital Re-admission
+
+
+```r
+admit_pts %>% filter(!is.na(Yr1Readmit)) %>% count(Yr1Readmit) %>% mutate(prop=paste0(100*round(n/nrow(admit_pts[!is.na(admit_pts$Yr1Readmit),]), 4), "%")) %>% 
+  ggplot(aes(x=reorder(Yr1Readmit, -n), y=n, fill=as.factor(Yr1Readmit), label=prop)) +
+  geom_text(position = position_dodge(.9),
+              vjust = -0.32,
+              size = 4) +
+  geom_bar(stat="identity") + ylab("Frequency") + xlab("Unplanned Readmission Within One-Year of Discharge") +
+  ggtitle("Frequency of Unplanned Readmission in MIMIC Data") + 
+  scale_fill_brewer(palette=2, type = "qual") + theme_minimal() + 
+  scale_x_discrete(label= c("No Readmission", "Readmitted")) + theme(legend.position = "none")
+```
+
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-31-1.png)<!-- -->
+
+
+Not only can we look at the simple binary readmission status, we also have time to re-admission, which we previously visualized among all patients but can look at simply within our subset of patients who were readmitted within our single, calendar year of interest:
+
+
+```r
+admit_pts %>% filter(Yr1Readmit==1) %>% 
+  ggplot(aes(x=TimeToReadmit_Recalc)) +
+  geom_density(fill="white") + theme_minimal() +
+  xlab("Days to Hospital Readmission") + ylab("Density") +
+  ggtitle("Density Curve of Days to Unplanned/Emergent Readmission") +
+  geom_vline(aes(xintercept=30, color="30 Days"), alpha=0.4,  lwd=1.2, lty=2)  +  
+  geom_vline(aes(xintercept=90, color="90 Days"), lwd=1.2, lty=2, alpha=0.4,) +
+  geom_vline(aes(xintercept=365, color="365 Days"), lwd=1.4, lty=2) +
+  scale_color_manual(name="Days to Readmission",
+                     values=c(`30 Days`="red", `90 Days`="blue", `365 Days`="lightblue")) +
+  theme(legend.position=c(0.72, 0.5), legend.box.margin = margin(6, 6, 6, 6))
+```
+
+```
+## Don't know how to automatically pick scale for object of type difftime. Defaulting to continuous.
+```
+
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-32-1.png)<!-- -->
+
+
+##### Age
+
+
+```r
+admit_pts %>%
+  ggplot(aes(x=Age)) +
+  geom_density(fill="white") + theme_minimal() +
+  xlab("Age") + ylab("Density") +
+  ggtitle("Density Curve of Age")
+```
+
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-33-1.png)<!-- -->
+
+
+##### Gender
+
+
+
+```r
+admit_pts %>% count(GENDER) %>% mutate(prop=paste0(100*round(n/nrow(admit_pts), 4), "%")) %>% 
+  ggplot(aes(x=reorder(GENDER, -n), y=n, fill=GENDER, label=prop)) +
+  geom_text(position = position_dodge(.9),
+              vjust = -0.32,
+              size = 4) +
+  geom_bar(stat="identity") + ylab("Frequency") + xlab("Gender") +
+  ggtitle("Frequency of Gender in MIMIC Data") + 
+  scale_fill_brewer(palette=2, type = "qual") + theme_minimal()
+```
+
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-34-1.png)<!-- -->
+
+
+We have a fairly balanced data set with respect to gender, with men outnumbering women (which we would expect in a data set of critical care admissions).
+
+
+
+
+## Final Data Export
+
+For the exploratory analysis above, the diagnosis data and patient-characteristic data have been contained in separate data frames. Below I pivot the diagnosis data (as previously done when determining the correlation matrix of our diagnosis data) from `icd_cohort` into `icd_wide` and merge the resulting pivoted data frame with the patient characteristics data contained in `admit_pts`. The final dataframe is then titled `cohort_full`. This data frame is used in this file, but I also export it as the standalone cohort and if in the future I would prefer to separate the data cleaning and EDA from the dimension reduction and regression modelling results of my thesis. 
+
+
+
+```r
+icd_wide <- icd_cohort %>%  
+  mutate(values=1) %>% 
+  pivot_wider(id_cols="SUBJECT_ID", names_from="ICD9_CODE", values_from="values") %>% 
+  mutate_all(function(x) ifelse(is.na(x), 0, x)) %>% select(-`NA`)
+
+cohort_full <- merge(icd_wide, admit_pts, by="SUBJECT_ID")
+
+colnames(cohort_full)[c(grep("[0-9]$", colnames(cohort_full)))] <- paste0("X", colnames(cohort_full)[c(grep("[0-9]$", colnames(cohort_full)))])
+
+write.csv(cohort_full,
+          here("Data", "cohort_full.csv"),
+          row.names = F)
+```
+
+## Analyses
+
+
+My lazy calling of packages and data, so that analysis does not require running all cleaning and EDA code above:
+
+
+```r
+require(magrittr) # Ceci n'est pas une %>% 
+require(dplyr) # General data management, cleaning (admittedly I switch between Base R and tidyverse as I code, somewhat stream-of-consciousness ly)
+require(ggplot2) # Visualization
+require(comorbidity) # Used to easily generate Elixhauser comorbdity grouping/categorization [8/23/2020 Note: may be excluded if Elixhauser or Charlson not used]
+require(tidyr) # pivot functions for transposing data to/from long and wide
+require(icd) # used in validity check of diagnoses codes
+require(lubridate) # used in evaluating dates, most notably in date of death 
+require(lares) # corr_cross function used to identify the top correlations within a data frame/design matrix
+require(corrplot) # used for visualizing correlation matrices 
+require(here) # Used for data-calls/ease of file path storage usage
+
+if(!("cohort_full" %in% ls())) {
+  cohort_full <-  read.csv(here("Data", "cohort_full.csv"))
+}
+```
+
+
+### Precursor Dimension Reduction
+
+Prior to the treelet cross-validation process, Dr. Carlson suggested fitting PCA to evaluate a possible range of values for the $K$ number of clusters parameter to fit in the treelet cross-validation process. I thought it may be interesting to similarly do some (similarly preliminary) agglomerative hierarchical clustering to the data. 
+
+### PCA Precursor 
+
+
+```r
+icd_pca <- cohort_full %>% select(starts_with("X")) %>% prcomp(center=T, scale=T)
+
+icd_pca_df <- data.frame(PC = 1:178,
+                         Var = icd_pca$sdev^2) %>% 
+              mutate(PropVar = Var / nrow(.),
+                     CmltvPropVar = cumsum(PropVar))
+
+icd_pca_df %>% ggplot(aes(x=PC, y=PropVar)) +
+  geom_point(size=5, alpha=0.4) + geom_line(lwd=0.75) + theme_minimal() +
+  ylab("Proportion of Variance Explained") + xlab("Principal Component") +
+  ggtitle("Proportion of Variance Explained by Individual Principal Component")
+```
+
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-37-1.png)<!-- -->
+
+```r
+icd_pca_df %>% ggplot(aes(x=PC, y=CmltvPropVar)) +
+  geom_point(size=5, alpha=0.4) + geom_line(lwd=0.75) + theme_minimal() +
+  ylab("Cumulative Proportion of Variance Explained") + xlab("Principal Component") +
+  ggtitle("Cumulative Proportion of Variance Explained by Principal Component")
+```
+
+![](Treelet_Analysis_EDA_files/figure-html/unnamed-chunk-37-2.png)<!-- -->
 
 
