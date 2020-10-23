@@ -1,0 +1,35 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+
+```{r}
+require(treelet)
+require(tidyverse)
+```
+
+
+```{r}
+x1 <- rnorm(100)
+x2 <- x1*rnorm(100, 2, 2)
+x3 <- x2*rnorm(100)
+x4 <- x1*rnorm(100)
+x5 <- rnorm(100)
+x6 <- rnorm(100)
+x7 <- rnorm(100)
+x8 <- rnorm(100)
+
+x_mat <- cbind(x1, x2, x3, x4, x5, x6, x7, x8)
+
+x_cor <- cor(x_mat)
+
+x_dist <- dist(x_mat, method="euclidean")
+
+as.dist(x_cor)
+
+hclust(as.dist(x_cor)) %>% plot()
+
+
+```
+

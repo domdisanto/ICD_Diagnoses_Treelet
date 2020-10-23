@@ -1,0 +1,4 @@
+Files are moved to this folder if they're otherwise deprecated/obsolete. These files were contained at one point on the GitHub repository but have since been deleted (retained in repository History)
+
+Treelet_Analysis_EDA
+	Now saved under "Thesis_Cleaning_EDA", simply renamed and archived the old file 
