@@ -9,7 +9,7 @@ require(treelet)
 require(tidyverse)
 ```
 
-
+First let me simulate the data to be used:
 ```{r}
 x1 <- rnorm(100)
 x2 <- x1*rnorm(100, 2, 2)
@@ -17,19 +17,108 @@ x3 <- x2*rnorm(100)
 x4 <- x1*rnorm(100)
 x5 <- rnorm(100)
 x6 <- rnorm(100)
-x7 <- rnorm(100)
-x8 <- rnorm(100)
+x7 <- rnorm(100, 3, 1)
+x8 <- x5*rnorm(100, 1, 0.5)
+x9 <- rnorm(100)
+x10 <- rnorm(100)
 
-x_mat <- cbind(x1, x2, x3, x4, x5, x6, x7, x8)
+x_mat <- cbind(x1, x2, x3, x4, x5, x6, x7, x8, x9, x10)
 
 x_cor <- cor(x_mat)
+```
 
-x_dist <- dist(x_mat, method="euclidean")
+`x_cor` is the correlation matrix and `x_mat` the design matrix (also our 0th level basis or $b_0$).
 
-as.dist(x_cor)
+Let's fit the treelet model, which we will use to assess/reference to ensure I understand the general modelling process:
 
-hclust(as.dist(x_cor)) %>% plot()
+
+```{r}
+# run treelet
+tt_x <- Run_JTree(x_cor, nrow(x_cor)-1, 1:(nrow(x_cor)-1))
+
+tt_x$Zpos
+```
+
+
+The 0th basis $B_0$ is defined as simply a $p\times p$ identity matrix ( for $p$ features, so in our case $p=8, B_0=\mathbf{I}_{10\times10}$):
+
+```{r}
+basis0 <- diag(rep(1, ncol(x_mat)))
+```
+
+We can 
+
+The first basis results from local PCA on the two most correlated markers. We identify the first two joined variables as `x1` and `x8` (referencing the output of `tt_x$Zpos`). 
+
+```{r}
+rot1_mat <- prcomp(x_mat[,c(tt_x$Zpos[1,1], tt_x$Zpos[1,2])], center = T, scale. = T)$rotation
+rot1_mat
+```
+
+Let me try to define (manually) the Jacobi rotation matrix. The Jacob matrix is defined as $J$ where $B_1=B_0J$. I don't fully understand the Jacobi rotation, but it appears that for the local PCA of the $ith$ and $jth$ features in our design matrix (for $j>i$), we fit the rotation matrix as a $p \times p$ identity matrix but with the following value replacements for a rotation angle $\theta_{\ell}$:
+
+- $x_{i,i} = cos(\theta_{\ell})$
+- $x_{j,i} = -sin(\theta_{\ell})$
+- $x_{i,j} = sin(\theta_{\ell})$
+- $x_{j,j} = cos(\theta_{\ell})$
+
+The new basis (say $B_\ell$)  is $B_{\ell-1}J$ and the new covariance matrix $\Sigma_{\ell} = J^T \Sigma_{\ell -1}J$. Let's test my understanding looking at the first basis of the treelet we just fit. First with the basis:
+
+```{r}
+j_mat1 <- diag(rep(1, ncol(x_mat)))
+j_mat1[tt_x$Zpos[1,1],tt_x$Zpos[1,1]] <- cos(pi/4) 
+j_mat1[tt_x$Zpos[1,1], tt_x$Zpos[1,2]] <- -sin(pi/4)
+j_mat1[tt_x$Zpos[1,2],tt_x$Zpos[1,1]] <- sin(pi/4)
+j_mat1[tt_x$Zpos[1,2], tt_x$Zpos[1,2]] <- cos(pi/4)
+
+all(basis0 %*% j_mat1 == tt_x$basis[[1]])
+```
+
+which thankfully checks out! Let's see if this can be replicated for the step from the 1st to the 2nd level of our treelet. 
+
+```{r}
+j_mat2 <- diag(rep(1, ncol(x_mat)))
+j_mat2[tt_x$Zpos[2,1],tt_x$Zpos[2,1]] <- cos(pi/4) 
+j_mat2[tt_x$Zpos[2,1], tt_x$Zpos[2,2]] <- -sin(pi/4)
+j_mat2[tt_x$Zpos[2,2],tt_x$Zpos[2,1]] <- sin(pi/4)
+j_mat2[tt_x$Zpos[2,2], tt_x$Zpos[2,2]] <- cos(pi/4)
+
+all(tt_x$basis[[1]] %*% j_mat2 == tt_x$basis[[2]])
+```
+
+And this is true as well! However I also want to check the calculation of the covariance matrix at each step in the treelet method. According to the publication related to treelet that I commonly reference, each covariance matrix at the $\ell^{th}$ level should simply be $\Sigma_{\ell} =J^T \Sigma_{\ell-1} J$. 
+
+
+```{r}
+cov1 <- cov2cor(cov(x_mat %*% j_mat1))
+round(cov1, 5) == round(tt_x$TreeCovs[[1]], 5)
+
+cov1
+cat("\n")
+tt_x$TreeCovs[[1]]
+```
+
+
+```{r}
+round(cor(x_mat %*% (basis0 %*% j_mat1)), 5) == round(cov1, 5)
 
 
 ```
+
+
+
+
+
+
+```{r}
+beta_true <- matrix(c(rnorm(4), 0, 0, 0, rnorm(1)), nrow=8) 
+   
+y_vec <- (x_mat %*% beta_true) + rnorm(100, 0, 4)
+
+beta_true
+lm(y_vec ~ x1 + x2 + x3 + x4 + x5 + x6 + x7 + x8) %>% summary()
+
+```
+
+
 
