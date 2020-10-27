@@ -19,7 +19,6 @@ output:
 library(magrittr) # Ceci n'est pas une %>%, loaded via dplyr also but liked to include for transparency 
 library(dplyr) # General data management, cleaning (admittedly I switch between Base R and tidyverse as I code, somewhat stream-of-consciousness ly)
 library(ggplot2) # Visualization
-library(comorbidity) # Used to easily generate Elixhauser comorbdity grouping/categorization [8/23/2020 Note: may be excluded if Elixhauser or Charlson not used]
 library(tidyr) # pivot functions for transposing data to/from long and wide
 library(icd) # used in validity check of diagnoses codes
 library(lubridate) # used in evaluating dates, most notably in date of death 
@@ -358,7 +357,7 @@ Now we will finalize our diagnosis by subsetting our diagnoses codes to those wi
 
 ```{r}
 icd_1pct <- icd_cohort %>% count(ICD9_CODE) %>% filter(n>(0.01*nrow(admit_pts))) %>% pull(ICD9_CODE)
-
+length(icd_1pct)
 icd_cohort <- icd_cohort %>% mutate(ICD9_CODE = 
                            case_when(
                              ICD9_CODE %in% icd_1pct ~ ICD9_CODE,
@@ -401,6 +400,12 @@ As it is impossible to elucidate much useful information from this visual, due t
 ```{r}
 icd_descr <- read.csv(here("Data", "Raw", "D_ICD_DIAGNOSES.csv"))
 
+# Percentages
+icd_cohort %>% count(ICD9_CODE) %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE)) %>% 
+  merge(icd_descr, by="ICD9_CODE", all.x=T) %>% arrange(desc(n)) %>% ungroup() %>%  filter(row_number()<=15) %>%
+  mutate(Prop=n/nrow(icd_cohort %>% distinct(SUBJECT_ID))) %>% select(ICD9_CODE, n, Prop)
+
+
 icd_cohort %>% count(ICD9_CODE) %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE)) %>% 
   merge(icd_descr, by="ICD9_CODE", all.x=T) %>% arrange(desc(n)) %>% ungroup() %>%  filter(row_number()<=15) %>% 
   ggplot(aes(x=reorder(SHORT_TITLE, -n), y=n)) +
@@ -412,6 +417,34 @@ icd_cohort %>% count(ICD9_CODE) %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE
 
 ```
 
+And re-plotting with Thesis-friendly captions:
+
+
+```{r, freq_plots}
+icd_cohort %>% count(ICD9_CODE)  %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE)) %>%
+  ggplot(aes(x=reorder(ICD9_CODE, -n), y=n)) +
+    geom_bar(stat="identity", fill="navyblue", alpha=0.65) +
+    ggtitle("A", #"Frequency Plot of All Diagnoses Codes", 
+          # subtitle = paste("(Including only codes with 1% prevalence or greater)\nn=", nrow(icd_cohort %>% count(ICD9_CODE)), 
+          #                  " unique diagnoses, among", 
+          #                  nrow(admit_pts), "patients")
+          ) + 
+    ylab("Frequency") + xlab("Distinct (Unlabelled) ICD-9 Codes") + theme_minimal() +
+    theme(axis.text.x=element_blank())
+
+icd_descr <- read.csv(here("Data", "Raw", "D_ICD_DIAGNOSES.csv"))
+
+icd_cohort %>% count(ICD9_CODE) %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE)) %>% 
+  merge(icd_descr, by="ICD9_CODE", all.x=T) %>% arrange(desc(n)) %>% ungroup() %>%  filter(row_number()<=15) %>% 
+  ggplot(aes(x=reorder(SHORT_TITLE, -n), y=n)) +
+    geom_bar(stat="identity", fill="navyblue", alpha=0.65) +
+    ggtitle("B", #"Frequency of the 15 Most Common Diagnoses"
+            ) + 
+    ylab("Frequency") + xlab("ICD-9 Code") + theme_minimal() +
+    theme(axis.text.x=element_text(angle=60, vjust=0.9, hjust=0.8))
+    # this is a really unfortunately x-axis, couldn't find a better angle or adjustment for the x-axis unfortunately 
+
+```
 
 
 #### Correlation Matrix Among Top Diagnoses
@@ -447,7 +480,8 @@ x <- (icd_cohort %>%
   cor())
 
 x[x>1] <- 1
-x %>% corrplot::corrplot(type="upper", diag=F, order="hclust", method = "shade", tl.pos = "n")
+x %>% corrplot::corrplot(type="upper", diag=F, order = "hclust", method = "color", tl.pos = "n")
+
 ```
 
 
@@ -487,12 +521,21 @@ icd_cohort %>%
 
 
 
-### Patient Level Data
+#### Patient Level Data
 
 We can briefly/descriptively examine some of our patient level data, observing frequencies or distributions of our covariates and examining possible relationships of our patient characteristics to mortality, readmission, and hospital length of stay where appropriate. Much of these visualizations were purely exploratory in nature. In instances where data were changed/re-categorized or otherwise altered based on the visualization, I have included comments/annotations. Otherwise, these figures are presented without commentary.
 
+##### Number of Diagnoses
 
-#### Mortality 
+```{r}
+icd_cohort %>% count(SUBJECT_ID) %>% summarise(Mean=quantile(n)[3],
+                                               P25=quantile(n)[2],
+                                               P75=quantile(n)[4])
+```
+
+
+
+##### Mortality 
 
 
 ```{r}
@@ -545,7 +588,9 @@ admit_pts %>%
 ```{r}
 los_graph <- admit_pts %>% 
   mutate(GenLOS=ceiling(difftime(DISCHTIME, ADMITTIME, units = "days") %>% as.numeric())) %>% select(SUBJECT_ID, GenLOS, DISCHTIME, ADMITTIME) # %>% 
-  
+
+# quantile(los_graph$GenLOS)
+
 los_graph %>%   ggplot(aes(x=GenLOS)) + geom_density(fill="lightblue", alpha=0.4) + theme_minimal() +
   xlab("General Hospital Length of Stay") + ylab("Density") + 
   ggtitle("Distribution of General Hospital Length of Stay (Days)") +
@@ -596,6 +641,10 @@ admit_pts %>% filter(Yr1Readmit==1) %>%
 ##### Age
 
 ```{r}
+# mean(admit_pts$Age)
+# sd(admit_pts$Age)
+quantile(admit_pts$Age)
+
 admit_pts %>%
   ggplot(aes(x=Age)) +
   geom_density(fill="white") + theme_minimal() +

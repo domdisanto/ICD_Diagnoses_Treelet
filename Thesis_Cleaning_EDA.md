@@ -209,11 +209,11 @@ admit_pts %>%
 
 ```
 ##   SUBJECT_ID Age                 DOD           DISCHTIME
-## 1       2648  76 2110-03-04 00:00:00 2110-02-12 16:37:00
-## 2       2135  72 2192-12-12 00:00:00 2190-11-21 12:30:00
-## 3      87085  85 2120-08-13 00:00:00 2120-07-23 17:19:00
-## 4       5754  68 2111-08-06 00:00:00 2111-02-22 13:00:00
-## 5      18032  56 2140-01-30 00:00:00 2139-11-27 13:57:00
+## 1      32013  87 2191-05-30 00:00:00 2188-03-31 16:30:00
+## 2      79919  78 2161-05-25 00:00:00 2161-05-23 11:50:00
+## 3      97321  73 2200-10-09 00:00:00 2200-06-24 16:33:00
+## 4      10757  87 2182-04-13 00:00:00 2179-05-01 14:54:00
+## 5      63509  35 2121-07-12 00:00:00 2121-02-27 14:55:00
 ```
 
 ```r
@@ -441,11 +441,11 @@ icd_precln %>% sample_n(5)
 
 ```
 ##   SUBJECT_ID HADM_ID SEQ_NUM ICD9_CODE
-## 1       7380  112188       6      4010
-## 2      15243  137159       6     25000
-## 3       3456  162329      14     73342
-## 4      12940  170525       1      4412
-## 5      69141  136542       3      5566
+## 1      15069  113003       5     76523
+## 2       8707  100752       8     77081
+## 3        522  176515       5      7793
+## 4       1371  109490      26      2724
+## 5      40375  123488       1      2252
 ```
 
 ##### Checking Code Definitions
@@ -516,7 +516,14 @@ Now we will finalize our diagnosis by subsetting our diagnoses codes to those wi
 
 ```r
 icd_1pct <- icd_cohort %>% count(ICD9_CODE) %>% filter(n>(0.01*nrow(admit_pts))) %>% pull(ICD9_CODE)
+length(icd_1pct)
+```
 
+```
+## [1] 178
+```
+
+```r
 icd_cohort <- icd_cohort %>% mutate(ICD9_CODE = 
                            case_when(
                              ICD9_CODE %in% icd_1pct ~ ICD9_CODE,
@@ -577,6 +584,43 @@ icd_cohort %>% count(ICD9_CODE) %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE
     # this is a really unfortunately x-axis, couldn't find a better angle or adjustment for the x-axis unfortunately 
 ```
 
+And re-plotting with Thesis-friendly captions:
+
+
+
+```r
+icd_cohort %>% count(ICD9_CODE)  %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE)) %>%
+  ggplot(aes(x=reorder(ICD9_CODE, -n), y=n)) +
+    geom_bar(stat="identity", fill="navyblue", alpha=0.65) +
+    ggtitle("A", #"Frequency Plot of All Diagnoses Codes", 
+          # subtitle = paste("(Including only codes with 1% prevalence or greater)\nn=", nrow(icd_cohort %>% count(ICD9_CODE)), 
+          #                  " unique diagnoses, among", 
+          #                  nrow(admit_pts), "patients")
+          ) + 
+    ylab("Frequency") + xlab("Distinct (Unlabelled) ICD-9 Codes") + theme_minimal() +
+    theme(axis.text.x=element_blank())
+```
+
+![](Thesis_Cleaning_EDA_files/figure-html/freq_plots-1.png)<!-- -->
+
+```r
+icd_descr <- read.csv(here("Data", "Raw", "D_ICD_DIAGNOSES.csv"))
+
+icd_cohort %>% count(ICD9_CODE) %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE)) %>% 
+  merge(icd_descr, by="ICD9_CODE", all.x=T) %>% arrange(desc(n)) %>% ungroup() %>%  filter(row_number()<=15) %>% 
+  ggplot(aes(x=reorder(SHORT_TITLE, -n), y=n)) +
+    geom_bar(stat="identity", fill="navyblue", alpha=0.65) +
+    ggtitle("B", #"Frequency of the 15 Most Common Diagnoses"
+            ) + 
+    ylab("Frequency") + xlab("ICD-9 Code") + theme_minimal() +
+    theme(axis.text.x=element_text(angle=60, vjust=0.9, hjust=0.8))
+```
+
+![](Thesis_Cleaning_EDA_files/figure-html/freq_plots-2.png)<!-- -->
+
+```r
+    # this is a really unfortunately x-axis, couldn't find a better angle or adjustment for the x-axis unfortunately 
+```
 
 
 #### Correlation Matrix Among Top Diagnoses
