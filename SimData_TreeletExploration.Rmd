@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ---
 title: "Simulated Data for Treelet Exploration"
 subtitle: "Supplemental Program for MS Thesis Writing & Computation"
@@ -443,3 +444,433 @@ lev <- 1
         else basis[[lev]] = NULL
     }
 ```
+=======
+---
+title: "Simulated Data for Treelet Exploration"
+subtitle: "Supplemental Program for MS Thesis Writing & Computation"
+author: "Dominic DiSanto"
+date: "Fall 2020"
+output: html_document
+---
+
+
+```{r}
+require(treelet)
+require(tidyverse)
+set.seed(16497)
+```
+
+First let me simulate the data to be used:
+
+```{r}
+x1 <- rnorm(100)
+x2 <- x1*rnorm(100, 2, 2)
+x3 <- x2*rnorm(100)
+x4 <- x1*rnorm(100)
+x5 <- rnorm(100)
+x6 <- rnorm(100)
+x7 <- rnorm(100, 3, 1)
+x8 <- x5*rnorm(100, 1, 0.5)
+x9 <- rnorm(100)
+x10 <- rnorm(100)
+
+x_mat <- cbind(x1, x2, x3, x4, x5, x6, x7, x8, x9, x10)
+
+for (i in 11:100) {
+    x_mat <- cbind(x_mat, runif(100))
+    colnames(x_mat)[i] <- paste('x', i, sep="")
+}
+
+write.csv(x_mat, "xmat.csv", row.names = F)
+x_cor <- cor(x_mat)
+x_cov <- cov(x_mat)
+```
+
+`x_cor` is the correlation matrix and `x_mat` the design matrix (also our 0th level basis or $b_0$).
+
+Let's fit the treelet model, which we will use to assess/reference to ensure I understand the general modelling process:
+
+
+```{r}
+# run treelet
+tt_x <- Run_JTree(x_cov, nrow(x_cov)-1, 1:(nrow(x_cov)-1))
+
+tt_x$Zpos
+```
+
+
+The 0th basis $B_0$ is defined as simply a $p\times p$ identity matrix ( for $p$ features, so in our case $p=8, B_0=\mathbf{I}_{10\times10}$):
+
+```{r}
+basis0 <- diag(rep(1, ncol(x_mat)))
+```
+
+We can 
+
+The first basis results from local PCA on the two most correlated markers. We identify the first two joined variables as `x1` and `x8` (referencing the output of `tt_x$Zpos`). 
+
+```{r}
+rot1_mat <- prcomp(x_mat[,c(tt_x$Zpos[1,1], tt_x$Zpos[1,2])])$rotation
+rot1_mat
+```
+
+Let me try to define (manually) the Jacobi rotation matrix. The Jacob matrix is defined as $J$ where $B_1=B_0J$. I don't fully understand the Jacobi rotation, but it appears that for the local PCA of the $ith$ and $jth$ features in our design matrix (for $j>i$), we fit the rotation matrix as a $p \times p$ identity matrix but with the following value replacements for a rotation angle $\theta_{\ell}$:
+
+- $x_{i,i} = cos(\theta_{\ell})$
+- $x_{j,i} = -sin(\theta_{\ell})$
+- $x_{i,j} = sin(\theta_{\ell})$
+- $x_{j,j} = cos(\theta_{\ell})$
+
+The new basis (say $B_\ell$)  is $B_{\ell-1}J$ and the new covariance matrix $\Sigma_{\ell} = J^T \Sigma_{\ell -1}J$. Let's test my understanding looking at the first basis of the treelet we just fit. First with the basis:
+
+```{r}
+theta <- 0.5*atan(
+    2*cov(x_mat)[tt_x$Zpos[1,1],tt_x$Zpos[1,2]] / (cov(x_mat)[tt_x$Zpos[1,1], tt_x$Zpos[1,1]] - cov(x_mat)[tt_x$Zpos[1,2], tt_x$Zpos[1,2]])
+    )
+
+cos(theta)
+```
+
+
+```{r}
+j_mat1 <- diag(rep(1, ncol(x_mat)))
+j_mat1[tt_x$Zpos[1,1],tt_x$Zpos[1,1]] <- cos(theta) 
+j_mat1[tt_x$Zpos[1,1], tt_x$Zpos[1,2]] <- -sin(theta)
+j_mat1[tt_x$Zpos[1,2],tt_x$Zpos[1,1]] <- sin(theta)
+j_mat1[tt_x$Zpos[1,2], tt_x$Zpos[1,2]] <- cos(theta)
+
+all(basis0 %*% j_mat1 == tt_x$basis[[1]])
+
+```
+
+which thankfully checks out! Let's see if this can be replicated for the step from the 1st to the 2nd level of our treelet. 
+
+```{r}
+theta2 <- 0.5*atan(2*x_cov[tt_x$Zpos[2,1], tt_x$Zpos[2,2]] / (x_cov[tt_x$Zpos[2,1], tt_x$Zpos[2,1]] - x_cov[tt_x$Zpos[2,2], tt_x$Zpos[2,2]]))
+    
+    
+j_mat2 <- diag(rep(1, ncol(x_mat)))
+j_mat2[tt_x$Zpos[2,1],tt_x$Zpos[2,1]] <- cos(theta2) 
+j_mat2[tt_x$Zpos[2,1], tt_x$Zpos[2,2]] <- -sin(theta2)
+j_mat2[tt_x$Zpos[2,2],tt_x$Zpos[2,1]] <- sin(theta2)
+j_mat2[tt_x$Zpos[2,2], tt_x$Zpos[2,2]] <- cos(theta2)
+
+all(tt_x$basis[[1]] %*% j_mat2 == tt_x$basis[[2]])
+
+```
+
+And this is true as well! However I also want to check the calculation of the covariance matrix at each step in the treelet method. According to the publication related to treelet that I commonly reference, each covariance matrix at the $\ell^{th}$ level should simply be $\Sigma_{\ell} =J^T \Sigma_{\ell-1} J$. 
+
+
+```{r}
+# Basis Level = 1
+cov1 <- t(j_mat1) %*% x_cov %*% j_mat1
+
+all(round(cov1, 5) == round(tt_x$TreeCovs[[1]], 5))
+
+
+# Basis Level = 2
+cov2 <- t(j_mat2) %*% cov1 %*% j_mat2
+
+all(round(cov2, 5) == round(tt_x$TreeCovs[[2]], 5))
+
+```
+
+
+Now let me try to work with the normalized energy score and identify the optimal $K$ and $L$ parameters:
+
+```{r}
+tt_x$basis[[1]]
+
+
+energy <- list() # matrix(nrow=ncol(x_mat), ncol=2, dimnames = list(rep(NULL, 10), c("J", "Energy")))
+
+for(k in 1:length(tt_x$basis)) {
+    energy[[k]] <- matrix(nrow=ncol(x_mat), ncol=2, dimnames = list(rep(NULL, 10), c("J", "Energy")))
+
+    basisk <- tt_x$basis[[k]]
+    
+    for (j in 1:ncol(basisk)) {
+        energy[[k]][j,1] <- j
+    
+        num_vec <- sapply(1:nrow(x_mat), function(i) (basisk[,j] %*% t(t(x_mat[i,])))#^2
+                          )
+        den_vec <- sapply(1:nrow(x_mat), function(i) (t(x_mat[i,])^2)
+                          )
+            
+        energy[[k]][j,2] <- sum(num_vec) / sum(den_vec)
+        energy[[k]] <- energy[[k]][order(energy[[k]][,2], decreasing = TRUE),]
+    }
+}
+
+# energy
+
+
+# We have to choose some K, so let K=5
+
+optimal_L <- matrix(c(1:length(energy), rep(NA, length(energy))), nrow=length(energy), dimnames = list(NULL, c("K", "Optimal L")))
+retained_fts <- rep(list(rep(list(rep(NA, length(energy))), length(energy))), length(energy))
+# str(retained_fts)
+
+# K=4
+
+for (K in 1:(ncol(x_mat)-1)){
+    energy_sum <- matrix(nrow=length(energy), ncol=2)
+    
+    
+
+    for (i in 1:length(energy)) {
+        energy_sum[i,1] <- i
+        energy_sum[i, 2] <- sum(energy[[i]][1:K,2])
+        retained_fts[[K]][[i]] <- energy[[i]][1:K,1]
+    }
+    
+    energy_sum <- round(energy_sum, 14)
+    energy_sum[energy_sum[,2]==max(energy_sum[,2]),]
+
+    if(length(energy_sum[energy_sum[,2]==max(energy_sum[,2]),])>2) {
+        optimal_L[K, 2] <- energy_sum[energy_sum[,2]==max(energy_sum[,2]),][1,1]
+    } else{
+        optimal_L[K, 2] <- energy_sum[energy_sum[,2]==max(energy_sum[,2]),][1]
+    }
+}
+
+optimal_L
+
+# str(retained_fts)
+# List of lists. The Kth list contains L lists of features retained (so retained_fts[[4]][[3]] returns the features (column indices) returned for K=4 at the 3rd Basis )
+
+```
+
+
+
+Now let me see if I can lastly apply these results to a supervised setting. I want to compare 
+1) the model with the input as they are
+2) the model with PCA applied to the inputs
+3) the model with treelet dimension reduction
+
+
+
+1) the model with the input as they are
+
+```{r}
+beta_true <- matrix(c(rnorm(4, 1.5, 0.2), 0, 0, 0, rnorm(4, 0.975, 0.1), rep(0, ncol(x_mat)-11)), nrow=ncol(x_mat)) 
+
+y_vec <- (x_mat %*% beta_true) + rnorm(100, 0, 1)
+```
+
+2) with PCA applied
+
+```{r}
+pca_op <- prcomp(x_mat, center = TRUE, scale. = TRUE)
+
+plot(1:ncol(x_mat), (pca_op$sdev)^2, type = "b")
+plot(1:ncol(x_mat), cumsum((pca_op$sdev)^2)/10, type="b")
+
+x_pca <- x_mat %*% pca_op$rotation[,1:60]
+lm(y_vec ~ x_pca) %>% summary()
+
+
+```
+
+Applying treelet (grossly to the data to identify the best K (not using an cross-validation))
+
+```{r}
+results <- matrix(c(1:length(energy), rep(NA, length(energy))), nrow=length(energy))
+
+
+for (K in 1:nrow(optimal_L)) {
+    
+    basis_cols <- retained_fts[[K]][[optimal_L[K,2]]]
+    x_mat_basis <- x_mat %*% tt_x$basis[[optimal_L[K,2]]][,basis_cols]
+
+    results[K,2] <- lm(y_vec ~ x_mat_basis) %>% summary() %>% .$adj.r.squared
+    
+}
+
+results <- cbind(results, optimal_L[,2])
+results_tract <- results[!is.na(results[,2]),]
+colnames(results_tract) <- c("K", "Adjusted R2", "Optimal L")
+results_tract[order(results_tract[,2], decreasing = T),]
+
+```
+
+```{r}
+# With all features
+lm(y_vec ~ x_mat) %>% summary() %>% .$adj.r.squared
+
+# With PCA features
+lm(y_vec ~ x_pca) %>% summary() %>% .$adj.r.squared
+
+# With treelet bases
+optimal_K <- results_tract[results_tract[,2]==max(results_tract[,2])][1]
+
+    basis_cols <- retained_fts[[optimal_K]][[optimal_L[optimal_K,2]]]
+    x_mat_basis <- x_mat %*% tt_x$basis[[optimal_L[optimal_K,2]]][,basis_cols]
+
+    lm(y_vec ~ x_mat_basis) %>% summary() %>% .$adj.r.squared
+
+```
+
+
+Comparing the same amount of retained PCA features
+
+```{r}
+# Treelet bases
+optimal_K <- results_tract[results_tract[,2]==max(results_tract[,2])][1]
+
+    basis_cols <- retained_fts[[optimal_K]][[optimal_L[optimal_K,2]]]
+    x_mat_basis <- x_mat %*% tt_x$basis[[optimal_L[optimal_K,2]]][,basis_cols]
+
+    lm(y_vec ~ x_mat_basis) %>% summary() %>% .$adj.r.squared
+
+    
+# tt_x$basis[[optimal_L[optimal_K,2]]][,basis_cols]
+
+
+optimal_L[optimal_K,]
+
+# PC's via PCA 
+x_pca <- x_mat %*% pca_op$rotation[,1:ncol(x_mat_basis)]
+lm(y_vec ~ x_pca) %>% summary() %>% .$adj.r.squared
+
+```
+
+Trying to create the sparse clusters
+
+```{r}
+
+optimal_L
+
+tt_x$Zpos[]
+```
+
+
+Below I manually explore the treelet some more to get a better understanding of the method. Still need to sped more time on this section for the write-up of the Methods and description of the Jacobi rotation
+
+
+
+```{r}
+C <- cov(x_mat)
+cc <- cov2cor(C)
+maxlev <- 9
+whichsave <- 1:9
+
+    myCs = list()
+    dim_C = dim(C)[1]
+    J = maxlev
+    Z = matrix(rep(0, J * 2), ncol = 2)
+    T = list()
+    theta = rep(0, J)
+    PCidx = matrix(rep(0, J * 2), ncol = 2)
+    L = 1
+    maskno = matrix()
+    nodes = seq(1, dim_C, by = 1)
+    dlabels = rep(0, dim_C)
+    PC_ratio = rep(0, dim_C - 1)
+    Zpos = matrix(rep(0, J * 2), ncol = 2)
+    all_d = matrix(rep(0, J * dim_C), ncol = dim_C)
+    all_nodes = matrix(rep(0, J * dim_C), ncol = dim_C)
+    cc.out = rep(NA, maxlev)
+    
+```
+    
+```{r}
+lev <- 1
+    for (lev in 1:J) {
+        mask_C = upper.tri(cc) * cc
+        k = (mask_C == 0)
+        mask_C[k] = -1
+        mask_C[maskno, ] = -1
+        mask_C[, maskno] = -1
+        compno = which(mask_C == max(mask_C), arr.ind = TRUE)[1, 
+            ]
+        Cred = C[compno, compno]
+        cc.out[lev] = cc[compno, compno][1, 2]
+        if (Cred[1, 2] == 0) {
+            Cnew = C
+            ccnew = cc
+            R = diag(c(1, 1))
+            theta = 0
+            idx = c(1, 2)
+        } else {
+            C11 = Cred[1, 1]
+            C22 = Cred[2, 2]
+            C12 = Cred[1, 2]
+            th = 1/2 * atan(2 * C12/(C11 - C22))
+            th / pi
+            cs = cos(th)
+            sn = sin(th)
+            R = rbind(c(cs, -sn), c(sn, cs))
+            M = C
+            M[compno, ] = t(R) %*% C[compno, ]
+            C = M
+            C[, compno] = M[, compno] %*% R
+            Cred = C[compno, compno]
+            idx = c(Cred[1, 1], Cred[2, 2])
+            idx = sort.list(idx, decreasing = TRUE)
+            dnew = diag(C)
+            temp = sqrt(matrix(dnew[compno], ncol = 1) %*% dnew)
+            temp = C[compno, ]/temp
+            cc[compno, ] = temp
+            cc[, compno] = t(temp)
+        }
+
+        PCidx[lev, ] = idx
+        theta[lev] = th
+        T[[lev]] = R
+        Z[lev, ] = nodes[compno]
+        pind = compno[idx]
+        p1 = pind[1]
+        p2 = pind[2]
+        nodes[pind] = cbind(dim_C + lev, 0)
+        dlabels[p2] = lev
+        if (lev == 1) {
+            maskno = p2
+            maskno = as.matrix(maskno)
+        }
+        else {
+            maskno = cbind(maskno, p2)
+        }
+        PC_ratio[lev] = C[p2, p2]/C[p1, p1]
+        Zpos[lev, ] = compno
+        all_d[lev, ] = t(dlabels)
+        all_nodes[lev, ] = nodes
+        if (lev %in% whichsave) {
+            myCs[[lev]] = C
+        }
+        else myCs[[lev]] = NULL
+        if (lev%%100 == 0) {
+            print(lev)
+            flush.console()
+        }
+    }
+    return(list(Zpos = Zpos, T = T, PCidx = PCidx, all_nodes = all_nodes, 
+        TreeCovs = myCs))
+```
+
+```{r}
+ J = dim(Zpos)[1]
+    m = dim(all_nodes)[2]
+    nodes = all_nodes[maxlev, ]
+    nodes = nodes[which(nodes > 0)]
+    tmpfilts = diag(rep(1, m))
+    ind = list()
+    sums = matrix(rep(0, m * maxlev), ncol = m)
+    difs = matrix(rep(0, m * maxlev), ncol = m)
+    basis = list()
+    for (lev in 1:maxlev) {
+        s = tmpfilts[Zpos[lev, ], ]
+        R = T[[lev]]
+        y = t(R) %*% s
+        tmpfilts[Zpos[lev, ], ] = y
+        y = y[PCidx[lev, ], ]
+        sums[lev, ] = y[1, ]
+        difs[lev, ] = y[2, ]
+        if (lev %in% whichsave) {
+            basis[[lev]] = t(tmpfilts)
+        }
+        else basis[[lev]] = NULL
+    }
+```
+>>>>>>> 948a085519542b7f61feed9aa571dd330a19939b
