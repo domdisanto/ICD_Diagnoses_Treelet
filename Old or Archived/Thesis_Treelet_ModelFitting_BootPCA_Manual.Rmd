@@ -1,0 +1,467 @@
+---
+title: "Treelet Transform: Identifing clusters of ICD-9 Diagnoses in a Boston Trauma Center"
+subtitle: "Data Analysis: Treelet & GLM Fitting"
+author: "Dominic DiSanto\n Master's Thesis"
+date: "Updated 9/20/2020"
+output: 
+  html_document:
+    keep_md: true
+    toc: true
+    toc_depth: '3'
+    code_folding: show
+---
+
+## Preparation
+
+
+## Libraries
+```{r, message=F, warning=FALSE}
+library(magrittr) # Ceci n'est pas une %>%, loaded via dplyr also but liked to include for transparency 
+library(dplyr) # General data management, cleaning (admittedly I switch between Base R and tidyverse as I code, somewhat stream-of-consciousness ly)
+library(ggplot2) # Visualization
+library(comorbidity) # Used to easily generate Elixhauser comorbdity grouping/categorization [8/23/2020 Note: may be excluded if Elixhauser or Charlson not used]
+library(tidyr) # pivot functions for transposing data to/from long and wide
+library(icd) # used in validity check of diagnoses codes
+library(lubridate) # used in evaluating dates, most notably in date of death 
+library(lares) # corr_cross function used to identify the top correlations within a data frame/design matrix
+library(corrplot) # used for visualizing correlation matrices
+library(here) # Used for data-calls/ease of file path storage usage 
+library(treelet) # Used for treelet analysis 
+library(ggdendro) # Used for dendrogram visualization of Treelet analysis
+```
+
+
+## File Path & Import
+
+This is my first attempt at using the `here` package for improved functionality of this program. I believe to use the `here` package as written in my program, your data simply need to be contained in a sub-folder called **Data** from where you've saved this file. For transparency, I'll describe my general (and I think simplistic) file structure for this analysis: Within a general project folder (say `Treelet`), this script and it's output are contained in an ***"Analysis"*** subfolder and the data within a ***Data*** subfolder of the same project folder. For the raw input data from MIMIC, I included a **Raw** sub-folder within the **Data** folder (to isolate raw MIMIC data from any exported data files or cleaned data). 
+
+Because I contain my analysis in a sub-folder of my main project file, I had to therefore manually set my `.here` file one level above my analytic file. If you happen to mirror my file structure, you must simply use the command `set_here("../")`, which will create a `.here` file in your root folder, a level above the analytic subfolder.      
+
+
+```{r}
+here()
+
+cohort_full <-  read.csv(here("Data", "cohort_full.csv"))
+colnames(cohort_full) <- cohort_full %>% colnames() %>% gsub(pattern = "X", "", x = .)
+cohort_full %>% head()
+```
+
+
+```{r, PCA, eval=F}
+icd_pca <- cohort_full %>% select(starts_with("X")) %>% prcomp(center=T, scale=T)
+
+icd_pca_df <- data.frame(PC = 1:178,
+                         Var = icd_pca$sdev^2) %>% 
+              mutate(PropVar = Var / nrow(.),
+                     CmltvPropVar = cumsum(PropVar))
+
+icd_pca_df %>% ggplot(aes(x=PC, y=PropVar)) +
+  geom_point(size=5, alpha=0.4) + geom_line(lwd=0.75) + theme_minimal() +
+  ylab("Proportion of Variance Explained") + xlab("Principal Component") +
+  ggtitle("Proportion of Variance Explained by Individual Principal Component")
+
+icd_pca_df %>% ggplot(aes(x=PC, y=CmltvPropVar)) +
+  geom_point(size=5, alpha=0.4) + geom_line(lwd=0.75) + theme_minimal() +
+  ylab("Cumulative Proportion of Variance Explained") + xlab("Principal Component") +
+  ggtitle("Cumulative Proportion of Variance Explained by Principal Component")
+
+```
+
+
+
+
+### Preliminary Treelet
+
+
+```{r}
+# compute correlation matrix
+# icd_cor <- cohort_full %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>%  cor()
+icd_cov <- cohort_full %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>%  cov()
+
+# run treelet
+tt_results <- treelet::Run_JTree(icd_cov, nrow(icd_cov)-1, 1:nrow(icd_cov)-1)
+```
+
+
+## Treelet Model Fitting
+
+### Energy Score Identification
+
+In this first chunk, I identify the energy of all $i=1,2,..., p-1$ vectors $w_i$ for all $L$ basis matrices:
+
+```{r}
+x_mat <- as.matrix(cohort_full %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit))
+energy <- list()
+
+for(L in 1:length(tt_results$basis)) {
+    # energy[[k]] <- matrix(nrow=ncol(x_mat), ncol=2,
+                          # dimnames = list(NULL, c("J", "Energy")))
+
+    basisk <- tt_results$basis[[L]]
+    w_x <- t(basisk) %*% t(x_mat)
+
+      num_vec <- rowSums(abs(w_x)^2)
+      den_vec <- x_mat^2 %>% colSums()
+          names(num_vec) <- NULL
+          names(den_vec) <- NULL
+
+    energy[[L]] <- matrix(c(1:ncol(x_mat), num_vec / den_vec), ncol=2, dimnames = list(NULL, c("W_i", "Energy")))
+}
+
+```
+
+We then want to identify for a given $K$ the $L$ basis matrix that maximizes the normalized energy sum ($\sum_{i=1}^K \varepsilon_i$). I will store these results in an $K\times 2$ matrix, with the first column representing the given $K$ value and the second the $L$ that maximies the energy.
+
+```{r}
+optimal_L <- matrix(c(1:length(energy), rep(NA, length(energy))), nrow=length(energy), dimnames = list(NULL, c("K", "Optimal L")))
+retained_fts <- rep(list(rep(list(rep(NA, length(energy))), length(energy))), length(energy))
+
+
+energy_ordered <- lapply(1:length(energy), function(L) energy[[L]][energy[[L]][,2] %>% order(decreasing = T),])
+
+# energy_ordered[[2]]
+
+optimal_L <- matrix(c(1:length(energy_ordered),
+                    sapply(1:length(energy_ordered), 
+                           function(K) which.max(sapply(1:length(energy), 
+                                                        function(x) sum(energy_ordered[[x]][1:K,2])
+                                                        )
+                                                 ))),
+                    ncol=2, dimnames=list(NULL, c("GivenK", "OptimalBasis_L")))
+
+retained_fts <- lapply(1:length(energy_ordered),
+                            function(x) energy_ordered[[optimal_L[x,2]]][optimal_L[1:x,1], 1])
+
+optimal_L
+
+```
+
+
+The above code constituted an exploration of the treelet within our full data set and to confirm the functionality of the below defined function. We are interested in the treelet in the context of our clinical outcomes, so we must define a function to extract the necessary information and apply treelet in the context of cross-validation and our outcomes of interest.  
+
+First I'm going to combine the above code into a function, since I will need to replicate treelet within our cross-validation folds:
+
+```{r}
+treelet_process <- function(x_mat, cov_mat){
+
+tt_results <- tt_results <- treelet::Run_JTree(cov_mat, nrow(cov_mat)-1, 1:nrow(cov_mat)-1)
+energy <- list()
+
+  for(L in 1:length(tt_results$basis)) {
+    # energy[[k]] <- matrix(nrow=ncol(x_mat), ncol=2,
+                          # dimnames = list(NULL, c("J", "Energy")))
+
+    basisk <- tt_results$basis[[L]]
+    w_x <- t(basisk) %*% t(x_mat)
+
+      num_vec <- rowSums(abs(w_x)^2)
+      den_vec <- x_mat^2 %>% colSums()
+          names(num_vec) <- NULL
+          names(den_vec) <- NULL
+
+    energy[[L]] <- matrix(c(1:ncol(x_mat), num_vec / den_vec), ncol=2, dimnames = list(NULL, c("W_i", "Energy")))
+}
+
+# Creating blank objects  
+optimal_L <- matrix(c(1:length(energy), rep(NA, length(energy))), nrow=length(energy), dimnames = list(NULL, c("K", "Optimal L")))
+retained_fts <- rep(list(rep(list(rep(NA, length(energy))), length(energy))), length(energy))
+
+# Reordering the energy matrices in descending order of normed energy score
+energy_ordered <- lapply(1:length(energy), function(L) energy[[L]][energy[[L]][,2] %>% order(decreasing = T),])
+
+# Identifying optimal L
+  optimal_L <- matrix(c(1:length(energy_ordered),
+                    sapply(1:length(energy_ordered), 
+                           function(K) which.max(sapply(1:length(energy), 
+                                                        function(x) sum(energy_ordered[[x]][1:K,2])
+                                                        )
+                                                 ))),
+                    ncol=2, dimnames=list(NULL, c("GivenK", "OptimalBasis_L")))
+# And retained fts
+retained_fts <- lapply(1:length(energy_ordered),
+                            function(x) energy_ordered[[optimal_L[x,2]]][optimal_L[1:x,1], 1])
+
+  return(list(basis_mats=tt_results$basis,
+              optimal_params=optimal_L,
+              retained_fts=retained_fts))
+}
+
+
+`%nin%` <- Negate(`%in%`)
+
+# if ("x_mat" %nin% ls()) x_mat <- as.matrix(cohort_full %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit))
+
+# function_test <- treelet_process(x_mat = x_mat, cov_mat = icd_cov)
+```
+
+
+## Trying a Bootstrap Sample and Model Fit
+
+```{r, evval=F}
+boot_samples <- sample(1:nrow(cohort_full), nrow(cohort_full), replace=TRUE)
+
+# Subset the data then create our diagnosis code matrix
+boot_data <- cohort_full[boot_samples,]
+boot_xmat <- boot_data %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
+# and the covariance matrix
+boot_cov <- cov(boot_xmat)
+
+# Generate the treelet
+`%nin%` <- Negate(`%in%`)
+if("tt_boot" %nin% ls()) tt_boot <- treelet_process(x_mat = boot_xmat, cov_mat = boot_cov)
+
+brier <- c()
+auc <- c()
+
+for(K in 1:length(tt_boot$basis)){
+    basis_l <- tt_boot$basis_mats[[K]][,tt_boot$retained_fts[[K]]]
+    k_mat <- boot_xmat %*%  basis_l
+    
+    train_glm <- glm(boot_data$InHospMortality ~ boot_data$GENDER + boot_data$Age + as.factor(boot_data$INSURANCE) + boot_data$HospitalLOS + k_mat ,
+                     family = "binomial")
+    
+    phat <- predict(object = train_glm, newdata = cohort_full, type="response") 
+  
+    brier[K] <- sum((phat - cohort_full$InHospMortality)^2) / nrow(boot_data)
+    auc[K] <- pROC::roc(cohort_full$InHospMortality, phat)$auc
+    
+}
+
+
+performance_mat <- matrix(c(1:length(tt_boot$basis_mats),
+                            brier,
+                            auc), ncol=3,
+                          dimnames=list(NULL, c("K", "Brier", "AUC")))
+
+plot(performance_mat[,2], performance_mat[,3])
+plot(performance_mat[,1], performance_mat[,2])
+plot(performance_mat[,1], performance_mat[,3])
+
+```
+
+
+## Cross-Validation (Mortality, LOS)  
+  
+
+### Hold-Out Test Set & CV-Folds
+
+```{r}
+set.seed(2824)
+
+hold_out_pts <- sample(1:nrow(cohort_full), size=nrow(cohort_full)/5, replace = F)
+
+holdout_test <- cohort_full[hold_out_pts,]
+# nrow(holdout_test)
+
+cv_data <- cohort_full[setdiff(1:nrow(cohort_full), hold_out_pts),]
+# nrow(cv_data)
+
+(nrow(holdout_test) + nrow(cv_data)) == nrow(cohort_full)
+
+cv_data$fold <- sample(c(rep(1, ceiling(nrow(cv_data)/5)),
+                         rep(2, ceiling(nrow(cv_data)/5)),
+                         rep(3, ceiling(nrow(cv_data)/5)),
+                         rep(4, ceiling(nrow(cv_data)/5)),
+                         rep(5, ceiling(nrow(cv_data)/5))
+                         ),
+                       size=nrow(cv_data), replace=F
+                       )
+
+table(cv_data$fold)
+```
+
+
+
+### In-Hospital Mortality
+
+```{r}
+subset_prac <- NULL
+```
+
+
+```{r}
+fold_no = 1
+
+for (fold_no in 1:max(cv_data$fold)) {
+  
+  train_cv <- cv_data[cv_data$fold==fold_no, ]
+  test_cv <- cv_data[cv_data$fold!=fold_no, ]
+    
+  train_xmat <- train_cv %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
+  train_cov <- cov(train_xmat)
+  
+  tt_fold <- treelet_process(x_mat = train_xmat, cov_mat = train_cov)
+  
+  # K = 5
+  brier <- list()
+  auc <- list()
+
+  for(K in 1:5){
+  # for(K in 1:length(tt_boot$basis)){
+        basis_l <- tt_boot$basis_mats[[K]][,tt_boot$retained_fts[[K]]]
+        k_mat <- boot_xmat %*%  basis_l
+        
+        train_glm <- glm(boot_data$InHospMortality ~ boot_data$GENDER + boot_data$Age + as.factor(boot_data$INSURANCE) + boot_data$HospitalLOS + k_mat ,
+                         family = "binomial")
+        
+        phat <- predict(object = train_glm, newdata = cohort_full, type="response") 
+      
+        brier[[fold_no]][K] <- sum((phat - cohort_full$InHospMortality)^2) / nrow(boot_data)
+        auc[[fold_no]][K] <- pROC::roc(cohort_full$InHospMortality, phat)$auc
+        
+    }
+
+  performance_mat <- matrix(c(1:length(tt_boot$basis_mats),
+                              brier,
+                              auc), ncol=3,
+                            dimnames=list(NULL, c("K", "Brier", "AUC")))
+}
+
+```
+
+
+### Hospital Length of Stay 
+
+
+## Cross-Validation (Readmission)
+
+Readmission analysis performed within a subset of our cohort, so separating the sections for this modelling
+
+### Readmission Modelling
+
+
+
+## Practice/Non-final Dendrogram Vizualization 
+
+
+```{r}
+# Converting the covariance matrix --> correlation matrix --> distance matrix
+  # currently simply for the highest level of the covariance matrix
+dist_mat <- as.dist(
+  1-cov2cor(tt_results$TreeCovs[[nrow(icd_cov)-1]])
+  )
+
+# Making the result easily plotted in a dendrogram
+  dendr <- dendro_data(hclust(dist_mat), type="rectangle")
+
+# Modifying the axis position of the labels slightly to reduce length of the final visual
+  dendr$segments[segment(dendr)$yend==0, "yend"] <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])*0.95
+  dendr$labels$y <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])
+  dendr$labels$label <- stringr::str_replace(dendr$labels$label, "X", "")
+  
+# Plot
+  ggplot() + 
+    geom_segment(data=segment(dendr), aes(x=x, y=y, xend=xend, yend=yend)) + 
+    geom_text(data=label(dendr), aes(x=x, y=y, label=label, hjust=0), size=3) +
+    coord_flip() + scale_y_reverse(expand=c(0.2, 0)) + 
+    theme(axis.line.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.title.y=element_blank(),
+          panel.background=element_rect(fill="white")) +
+    ggtitle("Example Dendrogram of All Data", subtitle = "Maximum Cut-Off Chosen Arbitrarily\nVisual and results incomplete, only included demonstratively")
+    
+
+```
+
+
+The above visualization is impossible to decipher, but (again solely for current presentation and familiaring myself with the treelet function's output structure), we can visualize the treelet for only the first 20 conjoinings/clusterings:
+
+
+```{r, warning=F, message=F}
+# pick zposition of interest (i.e. cut-level) and take the covariance matrix from that level
+  # tt_results$Zpos[1:20,]
+
+# need to extract the numeric label to the actual diagnosis code
+  labels_df <- cov2cor(tt_results$TreeCovs[[ncol(icd_cov)-1]]) %>% colnames() %>% data.frame(code = ., label=1:178)
+  
+  codes_mat <- tt_results$Zpos[1:20,] %>% as.data.frame() %>% 
+    merge(labels_df, by.x="V1", by.y="label", all.x=T)  %>% 
+    merge(labels_df, by.x="V2", by.y="label", all.x=T) %>% 
+    select(CodeLab1=code.x, CodeLab2=code.y) %>% as.matrix()
+
+  
+  
+  dist_mat <- as.dist(
+    1 - cov2cor(tt_results$TreeCovs[[ncol(icd_cov)-1]]) %>% .[colnames(.) %in% codes_mat,colnames(.) %in% codes_mat]
+  )
+
+dendr <- dendro_data(hclust(dist_mat), type="rectangle")
+
+dendr$segments[segment(dendr)$yend==0, "yend"] <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])*0.95
+dendr$labels$y <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])
+dendr$labels$label <- stringr::str_replace(dendr$labels$label, "X", "")
+
+ggplot() + 
+  geom_segment(data=segment(dendr), aes(x=x, y=y, xend=xend, yend=yend)) + 
+  geom_text(data=label(dendr), aes(x=x, y=y, label=label, hjust=0), size=3) +
+  coord_flip() + scale_y_reverse(expand=c(0.2, 0)) + 
+  theme(axis.line.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.title.y=element_blank(),
+        panel.background=element_rect(fill="white"))
+  
+
+```
+
+
+
+Trying to subset labels in the full dendrogram
+
+
+```{r, warning=F, message=F}
+
+# Converting the covariance matrix --> correlation matrix --> distance matrix
+  # currently simply for the highest level of the covariance matrix
+dist_mat <- as.dist(
+  1-cov2cor(tt_results$TreeCovs[[nrow(icd_cov)-1]])
+  )
+
+# Making the result easily plotted in a dendrogram
+  dendr <- dendro_data(hclust(dist_mat), type="rectangle")
+
+# Modifying the axis position of the labels slightly to reduce length of the final visual
+  dendr$segments[segment(dendr)$yend==0, "yend"] <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])*0.95
+  dendr$labels$y <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])
+  dendr$labels[!(dendr$labels$label %in% codes_mat), "label"] <- ""
+  dendr$labels$label <- stringr::str_replace(dendr$labels$label, "X", "")
+
+# Plot
+  ggplot() + 
+    geom_segment(data=segment(dendr), aes(x=x, y=y, xend=xend, yend=yend)) + 
+    geom_text(data=label(dendr), aes(x=x, y=y, label=label, hjust=0), size=3) +
+    coord_flip() + scale_y_reverse(expand=c(0.2, 0)) + 
+    theme(axis.line.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.title.y=element_blank(),
+          panel.background=element_rect(fill="white")) +
+    ggtitle("Example Dendrogram of All Data", subtitle = "Maximum Cut-Off Chosen Arbitrarily\nVisual and results incomplete, only included demonstratively") +
+    geom_hline(aes(yintercept=1.12), lty=2)
+  # NULL
+
+```
+
+
+
+Example of mean cross-validation error plot 
+
+
+```{r}
+n <-  c(1:length(tt_results$basis))
+auc <- -(n - mean(n))^2 *rnorm(length(tt_results$basis), 0.8, 0.2)
+auc_scale <- (auc + abs(min(auc))) / abs(min(auc))
+
+cv_sample_df <- data.frame(n=n, auc=auc_scale)
+
+ggplot(cv_sample_df, aes(x=n, y=auc)) +
+  geom_point() + geom_line() +
+      ggtitle("Example Plot of Cross-Validation Test Error",
+              subtitle = "Visual and results incomplete, only included demonstratively") +
+  theme_minimal() +
+  xlab("K") + ylab("Average Test AUC")
+
+
+```
+

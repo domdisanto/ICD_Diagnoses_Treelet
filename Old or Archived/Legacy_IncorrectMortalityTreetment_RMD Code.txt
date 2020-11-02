@@ -1,0 +1,50 @@
+```{r, incorrect_treelet}
+dendro_covmat <- Run_JTree(X = mortality_covmat, optimal_K_mortality, optimal_L_mortality)$TreeCovs[[optimal_L_mortality]]
+dendro_zpos <- Run_JTree(X = mortality_covmat, optimal_K_mortality, optimal_L_mortality)$Zpos
+# all(Run_JTree(X = mortality_covmat, optimal_K_mortality, optimal_L_mortality)$basis[[optimal_L_mortality]] == mortality_tt$basis_mats[[optimal_L_mortality]]) # check to ensure same results
+
+# Converting the covariance matrix --> correlation matrix --> distance matrix
+  # currently simply for the highest level of the covariance matrix
+dist_mat <- as.dist(
+  1-cov2cor(dendro_covmat)
+  )
+
+# Extracting Labels to Use in Dendrogram
+  labels_df <- dendro_covmat %>% colnames() %>% data.frame(code = ., label=1:ncol(dendro_covmat))
+  
+  codes_mat <- dendro_zpos[1:optimal_L_mortality,] %>% as.data.frame() %>% 
+    merge(labels_df, by.x="V1", by.y="label", all.x=T)  %>% 
+    merge(labels_df, by.x="V2", by.y="label", all.x=T) %>% 
+    select(CodeLab1=code.x, CodeLab2=code.y) %>% as.matrix()
+  
+# Making the result easily plotted in a dendrogram
+  dendr <- dendro_data(hclust(dist_mat), type="rectangle")
+  
+# Modifying the axis position of the labels slightly to reduce length of the final visual
+  dendr$segments[segment(dendr)$yend==0, "yend"] <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])*0.95
+  dendr$labels$y <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])
+  dendr$labels[!(dendr$labels$label %in% codes_mat), "label"] <- "" # used to set blanks to non-included features but currently omitting labels
+  # dendr$labels$label <- ""
+  dendr$labels$label <- stringr::str_replace(dendr$labels$label, "X", "") # Used to replace 'x''s in labelling, but currently omitting labels
+  
+  nrow(dendr$segments)
+  # mortality_cuttoff_dendro <- dendr$segments[dendr$segments$yend %>% order(decreasing = T),] %>% .[optimal_L_mortality, "y"]
+  quantile(x = dendr$segments$yend, optimal_L_mortality/100)
+  
+  dim(dendr$segments)
+  
+# Plot
+  ggplot() + 
+    geom_segment(data=segment(dendr), aes(x=x, y=y, xend=xend, yend=yend)) + 
+    geom_text(data=label(dendr), aes(x=x, y=y, label=label, hjust=0), size=3) +
+    coord_flip() + scale_y_reverse(expand=c(0.2, 0)) + 
+    theme(axis.line.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.title.y=element_blank(),
+          panel.background=element_rect(fill="white")) +
+    ggtitle("Dendrogram of Treelet: In-Hospital Mortality", subtitle = "K=68, L=63") + 
+    geom_hline(aes(yintercept=0.9817082), lty=2, lwd=1.4)
+
+  
+```

@@ -390,7 +390,7 @@ icd_cohort %>% count(ICD9_CODE)  %>% arrange(desc(n)) %>% filter(!is.na(ICD9_COD
                            " unique diagnoses, among", 
                            nrow(admit_pts), "patients")) + 
     ylab("Frequency") + xlab("Distinct (Unlabelled) ICD-9 Codes") + theme_minimal() +
-    theme(axis.text.x=element_blank())
+    theme(axis.text.x=element_blank(), text=element_text(size=13.5))
 
 ```
 
@@ -430,7 +430,7 @@ icd_cohort %>% count(ICD9_CODE)  %>% arrange(desc(n)) %>% filter(!is.na(ICD9_COD
           #                  nrow(admit_pts), "patients")
           ) + 
     ylab("Frequency") + xlab("Distinct (Unlabelled) ICD-9 Codes") + theme_minimal() +
-    theme(axis.text.x=element_blank())
+    theme(axis.text.x=element_blank(), text=element_text(size=15))
 
 icd_descr <- read.csv(here("Data", "Raw", "D_ICD_DIAGNOSES.csv"))
 
@@ -441,7 +441,7 @@ icd_cohort %>% count(ICD9_CODE) %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE
     ggtitle("B", #"Frequency of the 15 Most Common Diagnoses"
             ) + 
     ylab("Frequency") + xlab("ICD-9 Code") + theme_minimal() +
-    theme(axis.text.x=element_text(angle=60, vjust=0.9, hjust=0.8))
+    theme(axis.text.x=element_text(angle=60, vjust=0.9, hjust=0.8), text=element_text(size=15))
     # this is a really unfortunately x-axis, couldn't find a better angle or adjustment for the x-axis unfortunately 
 
 ```
@@ -496,18 +496,28 @@ top10_corr_plot <- icd_cohort %>%
   pivot_wider(id_cols="SUBJECT_ID", names_from="ICD9_CODE", values_from="values") %>% 
   mutate_all(function(x) ifelse(is.na(x), 0, 1)) %>% 
   select(-SUBJECT_ID) %>% 
-  corr_cross(top=10)
+  corr_cross(top=10, plot=F)
 
-top10_corr_plot
+
+top10_corr_plot %>% mutate(Pair = paste0(group1, ", ", group2)) %>% 
+  ggplot(aes(x=reorder(Pair, corr), y=round(corr, 2))) +
+  geom_bar(stat='identity', fill="black", alpha=0.6) + 
+  geom_text(aes(y =round(corr, 2)-0.04, label=round(corr, 2)),
+            color="white", alpha=0.75) + 
+  coord_flip() + theme_minimal() +
+  theme(text=element_text(size=13.5)) +
+  ylab("Correlation Coefficient") + xlab("ICD-9 Diagnosis Code Pair")
 
 ```
+  
+  
   
 And then examine a matrix-plot of these diagnoses as well:  
   
 ```{r}
 
-top_corr_vars <- c(top10_corr_plot$data %>% mutate(vars=substr(key, 2, nchar(key))) %>% pull(vars), 
-                   top10_corr_plot$data %>% mutate(vars=substr(mix, 2, nchar(mix))) %>% pull(vars)) %>% unique()
+top_corr_vars <- c(top10_corr_plot %>% mutate(vars=substr(key, 2, nchar(key))) %>% pull(vars), 
+                   top10_corr_plot %>% mutate(vars=substr(mix, 2, nchar(mix))) %>% pull(vars)) %>% unique()
                      
 
 icd_cohort %>% 

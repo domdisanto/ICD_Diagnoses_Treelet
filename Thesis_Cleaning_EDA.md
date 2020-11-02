@@ -20,7 +20,6 @@ output:
 library(magrittr) # Ceci n'est pas une %>%, loaded via dplyr also but liked to include for transparency 
 library(dplyr) # General data management, cleaning (admittedly I switch between Base R and tidyverse as I code, somewhat stream-of-consciousness ly)
 library(ggplot2) # Visualization
-library(comorbidity) # Used to easily generate Elixhauser comorbdity grouping/categorization [8/23/2020 Note: may be excluded if Elixhauser or Charlson not used]
 library(tidyr) # pivot functions for transposing data to/from long and wide
 library(icd) # used in validity check of diagnoses codes
 library(lubridate) # used in evaluating dates, most notably in date of death 
@@ -209,11 +208,11 @@ admit_pts %>%
 
 ```
 ##   SUBJECT_ID Age                 DOD           DISCHTIME
-## 1      32013  87 2191-05-30 00:00:00 2188-03-31 16:30:00
-## 2      79919  78 2161-05-25 00:00:00 2161-05-23 11:50:00
-## 3      97321  73 2200-10-09 00:00:00 2200-06-24 16:33:00
-## 4      10757  87 2182-04-13 00:00:00 2179-05-01 14:54:00
-## 5      63509  35 2121-07-12 00:00:00 2121-02-27 14:55:00
+## 1      16352  67 2203-01-07 00:00:00 2197-04-11 16:25:00
+## 2      62298  75 2164-09-20 00:00:00 2164-06-18 16:40:00
+## 3      18299  71 2199-02-25 00:00:00 2196-02-23 15:45:00
+## 4      81267  90 2168-04-21 00:00:00 2166-01-29 16:51:00
+## 5      25137  47 2111-12-31 00:00:00 2111-09-07 17:25:00
 ```
 
 ```r
@@ -441,11 +440,11 @@ icd_precln %>% sample_n(5)
 
 ```
 ##   SUBJECT_ID HADM_ID SEQ_NUM ICD9_CODE
-## 1      15069  113003       5     76523
-## 2       8707  100752       8     77081
-## 3        522  176515       5      7793
-## 4       1371  109490      26      2724
-## 5      40375  123488       1      2252
+## 1      88764  184080       3     42822
+## 2      21606  105325       1       042
+## 3      68089  191784       2       412
+## 4      47983  156024      16     27669
+## 5       1579  131236       2     51881
 ```
 
 ##### Checking Code Definitions
@@ -557,7 +556,7 @@ icd_cohort %>% count(ICD9_CODE)  %>% arrange(desc(n)) %>% filter(!is.na(ICD9_COD
                            " unique diagnoses, among", 
                            nrow(admit_pts), "patients")) + 
     ylab("Frequency") + xlab("Distinct (Unlabelled) ICD-9 Codes") + theme_minimal() +
-    theme(axis.text.x=element_blank())
+    theme(axis.text.x=element_blank(), text=element_text(size=13.5))
 ```
 
 ![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-21-1.png)<!-- -->
@@ -569,6 +568,32 @@ As it is impossible to elucidate much useful information from this visual, due t
 ```r
 icd_descr <- read.csv(here("Data", "Raw", "D_ICD_DIAGNOSES.csv"))
 
+# Percentages
+icd_cohort %>% count(ICD9_CODE) %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE)) %>% 
+  merge(icd_descr, by="ICD9_CODE", all.x=T) %>% arrange(desc(n)) %>% ungroup() %>%  filter(row_number()<=15) %>%
+  mutate(Prop=n/nrow(icd_cohort %>% distinct(SUBJECT_ID))) %>% select(ICD9_CODE, n, Prop)
+```
+
+```
+##    ICD9_CODE     n       Prop
+## 1       4019 16468 0.42714115
+## 2      41401 10035 0.26028428
+## 3      42731  9396 0.24371012
+## 4       4280  8517 0.22091093
+## 5      25000  6673 0.17308191
+## 6       2724  6411 0.16628625
+## 7       5849  6107 0.15840120
+## 8      51881  5385 0.13967422
+## 9       2720  4770 0.12372257
+## 10      5990  4527 0.11741972
+## 11     53081  4466 0.11583753
+## 12      2859  3949 0.10242776
+## 13      2851  3455 0.08961457
+## 14      2449  3364 0.08725424
+## 15       486  3335 0.08650205
+```
+
+```r
 icd_cohort %>% count(ICD9_CODE) %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE)) %>% 
   merge(icd_descr, by="ICD9_CODE", all.x=T) %>% arrange(desc(n)) %>% ungroup() %>%  filter(row_number()<=15) %>% 
   ggplot(aes(x=reorder(SHORT_TITLE, -n), y=n)) +
@@ -598,7 +623,7 @@ icd_cohort %>% count(ICD9_CODE)  %>% arrange(desc(n)) %>% filter(!is.na(ICD9_COD
           #                  nrow(admit_pts), "patients")
           ) + 
     ylab("Frequency") + xlab("Distinct (Unlabelled) ICD-9 Codes") + theme_minimal() +
-    theme(axis.text.x=element_blank())
+    theme(axis.text.x=element_blank(), text=element_text(size=15))
 ```
 
 ![](Thesis_Cleaning_EDA_files/figure-html/freq_plots-1.png)<!-- -->
@@ -613,7 +638,7 @@ icd_cohort %>% count(ICD9_CODE) %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE
     ggtitle("B", #"Frequency of the 15 Most Common Diagnoses"
             ) + 
     ylab("Frequency") + xlab("ICD-9 Code") + theme_minimal() +
-    theme(axis.text.x=element_text(angle=60, vjust=0.9, hjust=0.8))
+    theme(axis.text.x=element_text(angle=60, vjust=0.9, hjust=0.8), text=element_text(size=15))
 ```
 
 ![](Thesis_Cleaning_EDA_files/figure-html/freq_plots-2.png)<!-- -->
@@ -660,7 +685,7 @@ x <- (icd_cohort %>%
   cor())
 
 x[x>1] <- 1
-x %>% corrplot::corrplot(type="upper", diag=F, order="hclust", method = "shade", tl.pos = "n")
+x %>% corrplot::corrplot(type="upper", diag=F, order = "hclust", method = "color", tl.pos = "n")
 ```
 
 ![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-24-1.png)<!-- -->
@@ -678,7 +703,7 @@ top10_corr_plot <- icd_cohort %>%
   pivot_wider(id_cols="SUBJECT_ID", names_from="ICD9_CODE", values_from="values") %>% 
   mutate_all(function(x) ifelse(is.na(x), 0, 1)) %>% 
   select(-SUBJECT_ID) %>% 
-  corr_cross(top=10)
+  corr_cross(top=10, plot=F)
 ```
 
 ```
@@ -686,17 +711,26 @@ top10_corr_plot <- icd_cohort %>%
 ```
 
 ```r
-top10_corr_plot
+top10_corr_plot %>% mutate(Pair = paste0(group1, ", ", group2)) %>% 
+  ggplot(aes(x=reorder(Pair, corr), y=round(corr, 2))) +
+  geom_bar(stat='identity', fill="black", alpha=0.6) + 
+  geom_text(aes(y =round(corr, 2)-0.04, label=round(corr, 2)),
+            color="white", alpha=0.75) + 
+  coord_flip() + theme_minimal() +
+  theme(text=element_text(size=13.5)) +
+  ylab("Correlation Coefficient") + xlab("ICD-9 Diagnosis Code Pair")
 ```
 
 ![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-25-1.png)<!-- -->
+  
+  
   
 And then examine a matrix-plot of these diagnoses as well:  
   
 
 ```r
-top_corr_vars <- c(top10_corr_plot$data %>% mutate(vars=substr(key, 2, nchar(key))) %>% pull(vars), 
-                   top10_corr_plot$data %>% mutate(vars=substr(mix, 2, nchar(mix))) %>% pull(vars)) %>% unique()
+top_corr_vars <- c(top10_corr_plot %>% mutate(vars=substr(key, 2, nchar(key))) %>% pull(vars), 
+                   top10_corr_plot %>% mutate(vars=substr(mix, 2, nchar(mix))) %>% pull(vars)) %>% unique()
                      
 
 icd_cohort %>% 
@@ -712,12 +746,27 @@ icd_cohort %>%
 
 
 
-### Patient Level Data
+#### Patient Level Data
 
 We can briefly/descriptively examine some of our patient level data, observing frequencies or distributions of our covariates and examining possible relationships of our patient characteristics to mortality, readmission, and hospital length of stay where appropriate. Much of these visualizations were purely exploratory in nature. In instances where data were changed/re-categorized or otherwise altered based on the visualization, I have included comments/annotations. Otherwise, these figures are presented without commentary.
 
+##### Number of Diagnoses
 
-#### Mortality 
+
+```r
+icd_cohort %>% count(SUBJECT_ID) %>% summarise(Mean=quantile(n)[3],
+                                               P25=quantile(n)[2],
+                                               P75=quantile(n)[4])
+```
+
+```
+##   Mean P25 P75
+## 1    7   5   9
+```
+
+
+
+##### Mortality 
 
 
 
@@ -735,7 +784,7 @@ admit_pts %>% mutate(MortalityType=
   ggtitle("Frequency of In-Hospital Mortality Status") + theme_minimal() + theme(legend.position = "none") 
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-27-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-28-1.png)<!-- -->
 
 
 ##### Payment/Insurance
@@ -750,7 +799,7 @@ admit_pts %>% count(INSURANCE) %>% mutate(prop=paste0(round(n/nrow(admit_pts), 4
   ggtitle("Frequency of Insurance Status/Payment Method") + theme_minimal() + theme(legend.position = "none") 
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-28-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-29-1.png)<!-- -->
 
 With the two small groups of `Self Pay` and `Government`, I will contradict what I wrote earlier and collapse these categories. `Self Pay` will be collapsed into the `Private` category, and `Government` will be combined with `Medicaid` as `Medicaid/Non-Medicare Public Assistance`:
 
@@ -768,7 +817,7 @@ admit_pts %>%
   ggtitle("Frequency of Insurance Status/Payment Method") + theme_minimal() + theme(legend.position = "none") 
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-29-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-30-1.png)<!-- -->
 
 
 ##### General Hospital Length of Stay 
@@ -777,7 +826,9 @@ admit_pts %>%
 ```r
 los_graph <- admit_pts %>% 
   mutate(GenLOS=ceiling(difftime(DISCHTIME, ADMITTIME, units = "days") %>% as.numeric())) %>% select(SUBJECT_ID, GenLOS, DISCHTIME, ADMITTIME) # %>% 
-  
+
+# quantile(los_graph$GenLOS)
+
 los_graph %>%   ggplot(aes(x=GenLOS)) + geom_density(fill="lightblue", alpha=0.4) + theme_minimal() +
   xlab("General Hospital Length of Stay") + ylab("Density") + 
   ggtitle("Distribution of General Hospital Length of Stay (Days)") +
@@ -786,7 +837,7 @@ los_graph %>%   ggplot(aes(x=GenLOS)) + geom_density(fill="lightblue", alpha=0.4
                                                     round(var(los_graph$GenLOS),2), ", suggesting overdispersion of this variable."))
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-30-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-31-1.png)<!-- -->
 
 We unsurprisingly see a heavy skew in our length of stay data which is highly overdispersed (variance of 113 is more than ~13x greater than our mean of under 10 days).
  
@@ -806,7 +857,7 @@ admit_pts %>% filter(!is.na(Yr1Readmit)) %>% count(Yr1Readmit) %>% mutate(prop=p
   scale_x_discrete(label= c("No Readmission", "Readmitted")) + theme(legend.position = "none")
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-31-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-32-1.png)<!-- -->
 
 
 Not only can we look at the simple binary readmission status, we also have time to re-admission, which we previously visualized among all patients but can look at simply within our subset of patients who were readmitted within our single, calendar year of interest:
@@ -830,11 +881,22 @@ admit_pts %>% filter(Yr1Readmit==1) %>%
 ## Don't know how to automatically pick scale for object of type difftime. Defaulting to continuous.
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-32-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-33-1.png)<!-- -->
 
 
 ##### Age
 
+
+```r
+# mean(admit_pts$Age)
+# sd(admit_pts$Age)
+quantile(admit_pts$Age)
+```
+
+```
+##   0%  25%  50%  75% 100% 
+##   18   52   65   78   90
+```
 
 ```r
 admit_pts %>%
@@ -844,7 +906,7 @@ admit_pts %>%
   ggtitle("Density Curve of Age")
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-33-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-34-1.png)<!-- -->
 
 
 ##### Gender
@@ -862,7 +924,7 @@ admit_pts %>% count(GENDER) %>% mutate(prop=paste0(100*round(n/nrow(admit_pts), 
   scale_fill_brewer(palette=2, type = "qual") + theme_minimal()
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-34-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-35-1.png)<!-- -->
 
 
 We have a fairly balanced data set with respect to gender, with men outnumbering women (which we would expect in a data set of critical care admissions).
@@ -902,6 +964,17 @@ require(magrittr) # Ceci n'est pas une %>%
 require(dplyr) # General data management, cleaning (admittedly I switch between Base R and tidyverse as I code, somewhat stream-of-consciousness ly)
 require(ggplot2) # Visualization
 require(comorbidity) # Used to easily generate Elixhauser comorbdity grouping/categorization [8/23/2020 Note: may be excluded if Elixhauser or Charlson not used]
+```
+
+```
+## Loading required package: comorbidity
+```
+
+```
+## Warning: package 'comorbidity' was built under R version 4.0.2
+```
+
+```r
 require(tidyr) # pivot functions for transposing data to/from long and wide
 require(icd) # used in validity check of diagnoses codes
 require(lubridate) # used in evaluating dates, most notably in date of death 
@@ -955,7 +1028,7 @@ icd_pca_df %>% ggplot(aes(x=PC, y=PropVar)) +
   ggtitle("Proportion of Variance Explained by Individual Principal Component")
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-37-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-38-1.png)<!-- -->
 
 ```r
 icd_pca_df %>% ggplot(aes(x=PC, y=CmltvPropVar)) +
@@ -964,7 +1037,7 @@ icd_pca_df %>% ggplot(aes(x=PC, y=CmltvPropVar)) +
   ggtitle("Cumulative Proportion of Variance Explained by Principal Component")
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-37-2.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-38-2.png)<!-- -->
 
 
 
@@ -1634,7 +1707,7 @@ dist_mat <- as.dist(
     ggtitle("Example Dendrogram of All Data", subtitle = "Maximum Cut-Off Chosen Arbitrarily\nVisual and results incomplete, only included demonstratively")
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-40-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-41-1.png)<!-- -->
 
 
 The above visualization is impossible to decipher, but (again solely for current presentation and familiaring myself with the treelet function's output structure), we can visualize the treelet for only the first 20 conjoinings/clusterings:
@@ -1682,7 +1755,7 @@ ggplot() +
         panel.background=element_rect(fill="white"))
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-41-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-42-1.png)<!-- -->
 
 
 
@@ -1731,7 +1804,7 @@ dist_mat <- as.dist(
     ggtitle("Example Dendrogram of All Data", subtitle = "Maximum Cut-Off Chosen Arbitrarily\nVisual and results incomplete, only included demonstratively")
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-42-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-43-1.png)<!-- -->
 
 
 

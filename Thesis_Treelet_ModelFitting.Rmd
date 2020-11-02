@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 ---
 title: "Treelet Transform: Identifing clusters of ICD-9 Diagnoses in a Boston Trauma Center"
 subtitle: "Data Analysis: Treelet & GLM Fitting"
@@ -29,180 +28,100 @@ library(corrplot) # used for visualizing correlation matrices
 library(here) # Used for data-calls/ease of file path storage usage 
 library(treelet) # Used for treelet analysis 
 library(ggdendro) # Used for dendrogram visualization of Treelet analysis
+library(gghighlight) # Used in cross-validation visualizations
+library(MASS) # Used for glm.nb negative binomial regression function 
+
+select <- dplyr::select # Masking the MASS select function, somethign to do with ridge regression I think, in favor of dplyr's `select()` function for wrangling
+
+`%nin%` <- Negate(`%in%`) # Creating the inverse function of %in%, simpler than working with the !(...) negating logic syntax and saves me the extra parenthetical blocks
 ```
 
 
 ## File Path & Import
 
-This is my first attempt at using the `here` package for improved functionality of this program. I believe to use the `here` package as written in my program, your data simply need to be contained in a sub-folder called **Data** from where you've saved this file. For transparency, I'll describe my general (and I think simplistic) file structure for this analysis: Within a general project folder (say `Treelet`), this script and it's output are contained in an ***"Analysis"*** subfolder and the data within a ***Data*** subfolder of the same project folder. For the raw input data from MIMIC, I included a **Raw** sub-folder within the **Data** folder (to isolate raw MIMIC data from any exported data files or cleaned data). 
-
-Because I contain my analysis in a sub-folder of my main project file, I had to therefore manually set my `.here` file one level above my analytic file. If you happen to mirror my file structure, you must simply use the command `set_here("../")`, which will create a `.here` file in your root folder, a level above the analytic subfolder.      
-
+Loading data via `here` package 
 
 ```{r}
 here()
 
 cohort_full <-  read.csv(here("Data", "cohort_full.csv"))
 colnames(cohort_full) <- cohort_full %>% colnames() %>% gsub(pattern = "X", "", x = .)
-cohort_full %>% head()
-```
-
-
-```{r, eval=F}
-icd_pca <- cohort_full %>% select(starts_with("X")) %>% prcomp(center=T, scale=T)
-
-icd_pca_df <- data.frame(PC = 1:178,
-                         Var = icd_pca$sdev^2) %>% 
-              mutate(PropVar = Var / nrow(.),
-                     CmltvPropVar = cumsum(PropVar))
-
-icd_pca_df %>% ggplot(aes(x=PC, y=PropVar)) +
-  geom_point(size=5, alpha=0.4) + geom_line(lwd=0.75) + theme_minimal() +
-  ylab("Proportion of Variance Explained") + xlab("Principal Component") +
-  ggtitle("Proportion of Variance Explained by Individual Principal Component")
-
-icd_pca_df %>% ggplot(aes(x=PC, y=CmltvPropVar)) +
-  geom_point(size=5, alpha=0.4) + geom_line(lwd=0.75) + theme_minimal() +
-  ylab("Cumulative Proportion of Variance Explained") + xlab("Principal Component") +
-  ggtitle("Cumulative Proportion of Variance Explained by Principal Component")
-
+# cohort_full %>% head()
 ```
 
 
 
+## Treelet Cross-Validation Function
 
-### Preliminary Treelet
-
-
-```{r, warning=F, message=F}
-# compute correlation matrix
-# icd_cor <- cohort_full %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>%  cor()
-icd_cov <- cohort_full %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>%  cov()
-
-# run treelet
-tt_results <- treelet::Run_JTree(icd_cov, nrow(icd_cov)-1, 1:nrow(icd_cov)-1)
-```
+Defining the function that fits the treelet, and retains the output of interest to identify the optimal K in my cross-validation code
 
 
-## Treelet Model Fitting
-
-### Energy Score Identification
-
-In this first chunk, I identify the energy of all $i=1,2,..., p-1$ vectors $w_i$ for all $L$ basis matrices:
-
-```{r}
-x_mat <- as.matrix(cohort_full %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit))
-energy <- list()
-
-for(L in 1:length(tt_results$basis)) {
-    # energy[[k]] <- matrix(nrow=ncol(x_mat), ncol=2,
-                          # dimnames = list(NULL, c("J", "Energy")))
-
-    basisk <- tt_results$basis[[L]]
-    w_x <- t(basisk) %*% t(x_mat)
-
-      num_vec <- rowSums(abs(w_x)^2)
-      den_vec <- x_mat^2 %>% colSums()
-          names(num_vec) <- NULL
-          names(den_vec) <- NULL
-
-    energy[[L]] <- matrix(c(1:ncol(x_mat), num_vec / den_vec), ncol=2, dimnames = list(NULL, c("W_i", "Energy")))
-}
-
-```
-
-We then want to identify for a given $K$ the $L$ basis matrix that maximizes the normalized energy sum ($\sum_{i=1}^K \varepsilon_i$). I will store these results in an $K\times 2$ matrix, with the first column representing the given $K$ value and the second the $L$ that maximies the energy.
-
-```{r}
-optimal_L <- matrix(c(1:length(energy), rep(NA, length(energy))), nrow=length(energy), dimnames = list(NULL, c("K", "Optimal L")))
-retained_fts <- rep(list(rep(list(rep(NA, length(energy))), length(energy))), length(energy))
-
-
-energy_ordered <- lapply(1:length(energy), function(L) energy[[L]][energy[[L]][,2] %>% order(decreasing = T),])
-
-# energy_ordered[[2]]
-
-optimal_L <- matrix(c(1:length(energy_ordered),
-                    sapply(1:length(energy_ordered), 
-                           function(K) which.max(sapply(1:length(energy), 
-                                                        function(x) sum(energy_ordered[[x]][1:K,2])
-                                                        )
-                                                 ))),
-                    ncol=2, dimnames=list(NULL, c("GivenK", "OptimalBasis_L")))
-
-retained_fts <- lapply(1:length(energy_ordered),
-                            function(x) energy_ordered[[optimal_L[x,2]]][optimal_L[1:x,1], 1])
-
-optimal_L
-
-```
-
-
-The above code constituted an exploration of the treelet within our full data set and to confirm the functionality of the below defined function. We are interested in the treelet in the context of our clinical outcomes, so we must define a function to extract the necessary information and apply treelet in the context of cross-validation and our outcomes of interest.  
-
-First I'm going to combine the above code into a function, since I will need to replicate treelet within our cross-validation folds:
 
 ```{r}
 treelet_process <- function(x_mat, cov_mat){
 
-tt_results <- tt_results <- treelet::Run_JTree(cov_mat, nrow(cov_mat)-1, 1:nrow(cov_mat)-1)
+  tt_results <- tt_results <- treelet::Run_JTree(cov_mat, nrow(cov_mat)-1, 1:nrow(cov_mat)-1) # Running the `treelet` package's implementation and retaining all (1) to (p-1) results
+  energy <- list() # empty list to store energy scores
 
-  for(L in 1:length(tt_results$basis)) {
-    # energy[[k]] <- matrix(nrow=ncol(x_mat), ncol=2,
-                          # dimnames = list(NULL, c("J", "Energy")))
+      for(L in 1:length(tt_results$basis)) { # repeating this for all basis matrices identified in the treelet above
+        
+        basisk <- tt_results$basis[[L]] # storing the specific basis
+        w_x <- t(basisk) %*% t(x_mat) # applying the basis matrix to the original input matri of diagnosis codes 
+    
+          num_vec <- rowSums(abs(w_x)^2) # numerator vector -> calculation of the p-1 values for the numerator of the energy score calculation
+          den_vec <- x_mat^2 %>% colSums() # similar to the above line but the denominator calculation, column summed over all n observations
+              names(num_vec) <- NULL # removing dimension names o fmatrix
+              names(den_vec) <- NULL
+    
+        energy[[L]] <- matrix(c(1:ncol(x_mat), num_vec / den_vec), ncol=2, dimnames = list(NULL, c("W_i", "Energy"))) # generating energy scores
+    }
 
-    basisk <- tt_results$basis[[L]]
-    w_x <- t(basisk) %*% t(x_mat)
+  # Creating blank objects  
+    optimal_L <- matrix(c(1:length(energy), rep(NA, length(energy))), nrow=length(energy), dimnames = list(NULL, c("K", "Optimal L"))) # empty list set
+    retained_fts <- rep(list(rep(list(rep(NA, length(energy))), length(energy))), length(energy)) # empty list set
 
-      num_vec <- rowSums(abs(w_x)^2)
-      den_vec <- x_mat^2 %>% colSums()
-          names(num_vec) <- NULL
-          names(den_vec) <- NULL
+  # Reordering the energy matrices in descending order of normed energy score
+    energy_ordered <- lapply(1:length(energy), function(L) energy[[L]][energy[[L]][,2] %>% order(decreasing = T),]) # sorting all p-1 energy vectors in descending order
 
-    energy[[L]] <- matrix(c(1:ncol(x_mat), num_vec / den_vec), ncol=2, dimnames = list(NULL, c("W_i", "Energy")))
-}
+  # Identifying optimal L
+    optimal_L <- matrix(c(1:length(energy_ordered), # identifying the basis matrix with the highest energy summation for every given K
+                      sapply(1:length(energy_ordered), 
+                             function(K) which.max(sapply(1:length(energy), 
+                                                          function(x) sum(energy_ordered[[x]][1:K,2])
+                                                          )
+                                                   ))),
+                      ncol=2, dimnames=list(NULL, c("GivenK", "OptimalBasis_L")))
 
-# Creating blank objects  
-optimal_L <- matrix(c(1:length(energy), rep(NA, length(energy))), nrow=length(energy), dimnames = list(NULL, c("K", "Optimal L")))
-retained_fts <- rep(list(rep(list(rep(NA, length(energy))), length(energy))), length(energy))
-
-# Reordering the energy matrices in descending order of normed energy score
-energy_ordered <- lapply(1:length(energy), function(L) energy[[L]][energy[[L]][,2] %>% order(decreasing = T),])
-
-# Identifying optimal L
-  optimal_L <- matrix(c(1:length(energy_ordered),
-                    sapply(1:length(energy_ordered), 
-                           function(K) which.max(sapply(1:length(energy), 
-                                                        function(x) sum(energy_ordered[[x]][1:K,2])
-                                                        )
-                                                 ))),
-                    ncol=2, dimnames=list(NULL, c("GivenK", "OptimalBasis_L")))
-# And retained fts
-retained_fts <- lapply(1:length(energy_ordered),
-                            function(x) energy_ordered[[optimal_L[x,2]]][optimal_L[1:x,1], 1])
+  # And retained fts
+    retained_fts <- lapply(1:length(energy_ordered),
+                            function(x) energy_ordered[[optimal_L[x,2]]][optimal_L[1:x,1], 1]) # then the retained features of the basis that represent the K highest energy score columns
 
   return(list(basis_mats=tt_results$basis,
               optimal_params=optimal_L,
               retained_fts=retained_fts))
 }
-
-function_test <- treelet_process(x_mat = x_mat, cov_mat = icd_cov)
 ```
 
 
 
-## Cross-Validation (Mortality, LOS)  
-  
-### Hold-Out Test Set & CV-Folds
+## Cross-Validation Data Split  
+
+Splitting the data into a cross-validation set (80%) and hold-out test set (20%). Within the 80% cross-validation set, I then create a new variable identifying the five folds to be used in the cross-validation process. 
+
+The length of stay and mortality models use the same cohort (the same inclusion criteria), so the same data splits are used for both of these analyses Our readmission cohort is limited only to patients who were readmitted or who survived out to one year withour readmission, so the data split is conduced separately for this subset of patients
+
+### Mortality & Length of Stay 
 
 ```{r}
+set.seed(2824)
+
 hold_out_pts <- sample(1:nrow(cohort_full), size=nrow(cohort_full)/5, replace = F)
 
 holdout_test <- cohort_full[hold_out_pts,]
-nrow(holdout_test)
+# nrow(holdout_test)
 
 cv_data <- cohort_full[setdiff(1:nrow(cohort_full), hold_out_pts),]
-nrow(cv_data)
+# nrow(cv_data)
 
 (nrow(holdout_test) + nrow(cv_data)) == nrow(cohort_full)
 
@@ -218,516 +137,911 @@ cv_data$fold <- sample(c(rep(1, ceiling(nrow(cv_data)/5)),
 table(cv_data$fold)
 ```
 
+### Hospital Readmission 
+
+
+```{r}
+set.seed(70221)
+
+cohort_readmit <- cohort_full %>% filter(!is.na(Yr1Readmit))
+
+hold_out_readmit <- sample(1:nrow(cohort_readmit), size=nrow(cohort_readmit)/5, replace = F)
+
+holdout_test_readmit <- cohort_readmit[hold_out_readmit,]
+# nrow(holdout_test)
+
+cv_data_readmit <- cohort_readmit[setdiff(1:nrow(cohort_readmit), hold_out_readmit),]
+# nrow(cv_data)
+
+(nrow(holdout_test_readmit) + nrow(cv_data_readmit)) == nrow(cohort_readmit)
+
+cv_data_readmit$fold <- sample(c(rep(1, ceiling(nrow(cv_data_readmit)/5)),
+                         rep(2, ceiling(nrow(cv_data_readmit)/5)),
+                         rep(3, ceiling(nrow(cv_data_readmit)/5)),
+                         rep(4, ceiling(nrow(cv_data_readmit)/5)),
+                         rep(5, ceiling(nrow(cv_data_readmit)/5))
+                         ),
+                       size=nrow(cv_data_readmit), replace=F
+                       )
+
+table(cv_data_readmit$fold)
+
+```
+
+
+## Treelet Cross-Valdiation and Results Export
+
+For each of our outcomes, similar processes are followed, which include:
+
+1) Fitting the treelet model, using the previously defined `treelet_process` function, for each training fold
+2) Then for K=1,2,...p-1 in this identified treelet:   
+     a) Fitting the appropriate regression model in the training data using the K dimensions and corresponding optimal Lth basis  
+     b) Using this fit model to predict probability of outcome (or outcome, in the length of stay negative binomial model)   
+     c) Assess test fit (Briers & AUC for mortality, readmission; MSE for length of stay)   
+     d) Export a data frame that contains test error for each K parameter and fold, and the average test Brier Score and AUC (so 177 observations (for 1 to p-1 values of K), and 13 columns, a K value, test-fold specific Brier Score and AUC values, and the two averages)
 
 ### In-Hospital Mortality
 
+
 ```{r}
-fold_no = 1
+
+brier <- list(c(), c(), c(), c(), c())
+auc <- list(c(), c(), c(), c(), c())
+
 
 for (fold_no in 1:max(cv_data$fold)) {
   
-  train_cv <- cv_data[cv_data$fold==fold_no, ]
-  test_cv <- cv_data[cv_data$fold!=fold_no, ]
+  train_cv <- cv_data[cv_data$fold!=fold_no, ]
+  test_cv <- cv_data[cv_data$fold==fold_no, ]
     
   train_xmat <- train_cv %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
   train_cov <- cov(train_xmat)
+
+  test_xmat <- test_cv %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
   
   tt_fold <- treelet_process(x_mat = train_xmat, cov_mat = train_cov)
   
-  K = 5
-  for(K in 1:length(tt_fold$basis)){
-
-    basis_l <- tt_fold$basis_mats[[K]][,tt_fold$retained_fts[[K]]]
-    k_mat <- train_xmat %*%  basis_l
+  for(K in 1:length(tt_fold$basis_mats)){
+        # basis_l <- tt_fold$basis_mats[[K]][,tt_fold$retained_fts[[K]]]
+        basis_no <- tt_fold$optimal_params[i,2]
+        basis_l <- tt_fold$basis_mats[[basis_no]][,tt_fold$retained_fts[[K]]]
     
-    train_glm <- glm(train_cv$InHospMortality ~ train_cv$GENDER + train_cv$Age + as.factor(train_cv$INSURANCE) + train_cv$HospitalLOS + k_mat ,
-                     family = "binomial")
-    
-    predict(object = train_glm, newdata = test_cv) 
-  
-  }
+        k_mat <- train_xmat %*%  basis_l
+        
+        train_glm_df <- train_cv %>% select(InHospMortality, GENDER, Age, INSURANCE) %>% cbind(., k_mat)
+        if(K==1) colnames(train_glm_df)[5] <- "`1`"     # Account for weirdness in column naming from cbind() when test_kmat has one column 
+        # train_glm <- glm(train_cv$InHospMortality ~ train_cv$GENDER + train_cv$Age + as.factor(train_cv$INSURANCE) + train_cv$HospitalLOS + k_mat ,
+        #                  family = "binomial")
+        
+        train_glm <- glm(InHospMortality ~ . , data=train_glm_df,
+                         family = "binomial")
+        
+        test_kmat <- test_xmat %*% basis_l
+        test_glm_df <- test_cv %>% select(InHospMortality, GENDER, Age, INSURANCE) %>% cbind(., test_kmat)
+        if(K==1) colnames(test_glm_df)[5] <- "`1`"     # Account for weirdness in column naming from cbind() when test_kmat has one column
+        
+        phat <- predict(object = train_glm, newdata = test_glm_df, type="response") 
+      
+        brier[[fold_no]][K] <- sum((phat - test_cv$InHospMortality)^2) / nrow(test_cv)
+        auc[[fold_no]][K] <- pROC::roc(test_cv$InHospMortality, phat)$auc
+        
+    }
 }
+
+
+performance_df <- data.frame(K=c(1:length(brier[[1]])), 
+                             BS_F1 = brier[[1]],
+                             BS_F2 = brier[[2]],
+                             BS_F3 = brier[[3]],
+                             BS_F4 = brier[[4]],
+                             BS_F5 = brier[[5]],
+                             AUC_F1 = auc[[1]],
+                             AUC_F2 = auc[[2]],
+                             AUC_F3 = auc[[3]],
+                             AUC_F4 = auc[[4]],
+                             AUC_F5 = auc[[5]]) 
+
+performance_df2 <- performance_df %>% mutate(BS_TestAvg = 
+                            rowMeans(select(performance_df, starts_with("BS"))),
+                          AUC_TestAvg =
+                            rowMeans(select(performance_df, starts_with("AUC"))))
+
+write.csv(performance_df2, here("Results/MortalityModel_CVPerformance_NoLOS_NewKLCode.csv"), row.names = F)
+
+```
+
+
+
+
+### Hospital Readmission 
+
+```{r}
+brier <- list(c(), c(), c(), c(), c())
+auc <- list(c(), c(), c(), c(), c())
+
+
+for (fold_no in 1:max(cv_data_readmit$fold)) {
+  
+  train_cv <- cv_data_readmit[cv_data_readmit$fold!=fold_no, ]
+  test_cv <- cv_data_readmit[cv_data_readmit$fold==fold_no, ] 
+    
+  train_xmat <- train_cv %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
+  train_cov <- cov(train_xmat)
+
+  test_xmat <- test_cv %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
+  
+  tt_fold <- treelet_process(x_mat = train_xmat, cov_mat = train_cov)
+  
+  for(K in 1:length(tt_fold$basis_mats)){
+        # basis_l <- tt_fold$basis_mats[[K]][,tt_fold$retained_fts[[K]]]
+        basis_no <- tt_fold$optimal_params[K,2]
+        basis_l <- tt_fold$basis_mats[[basis_no]][,tt_fold$retained_fts[[K]]]
+
+        k_mat <- train_xmat %*%  basis_l
+        
+        train_glm_df <- train_cv %>% select(Yr1Readmit, GENDER, Age, INSURANCE, HospitalLOS) %>% cbind(., k_mat)
+        if(K==1) colnames(train_glm_df)[6] <- "`1`"     # Account for weirdness in column naming from cbind() when test_kmat has one column 
+        # train_glm <- glm(train_cv$InHospMortality ~ train_cv$GENDER + train_cv$Age + as.factor(train_cv$INSURANCE) + train_cv$HospitalLOS + k_mat ,
+        #                  family = "binomial")
+        
+        train_glm <- glm(Yr1Readmit ~ . , data=train_glm_df,
+                         family = "binomial")
+        
+        test_kmat <- test_xmat %*% basis_l
+        test_glm_df <- test_cv %>% select(Yr1Readmit, GENDER, Age, INSURANCE, HospitalLOS) %>% cbind(., test_kmat)
+        if(K==1) colnames(test_glm_df)[6] <- "`1`"     # Account for weirdness in column naming from cbind() when test_kmat has one column
+        
+        phat <- predict(object = train_glm, newdata = test_glm_df, type="response") 
+      
+        brier[[fold_no]][K] <- sum((phat - test_cv$Yr1Readmit)^2) / nrow(test_cv)
+        auc[[fold_no]][K] <- pROC::roc(test_cv$Yr1Readmit, phat)$auc
+        
+    }
+}
+
+performance_df_readmit <- data.frame(K=c(1:length(brier[[1]])), 
+                             BS_F1 = brier[[1]],
+                             BS_F2 = brier[[2]],
+                             BS_F3 = brier[[3]],
+                             BS_F4 = brier[[4]],
+                             BS_F5 = brier[[5]],
+                             AUC_F1 = auc[[1]],
+                             AUC_F2 = auc[[2]],
+                             AUC_F3 = auc[[3]],
+                             AUC_F4 = auc[[4]],
+                             AUC_F5 = auc[[5]]) 
+
+performance_df2_readmit <- performance_df_readmit %>% mutate(BS_TestAvg = 
+                            rowMeans(select(performance_df_readmit, starts_with("BS"))),
+                          AUC_TestAvg =
+                            rowMeans(select(performance_df_readmit, starts_with("AUC"))))
+
+
+write.csv(performance_df2_readmit, here("Results/ReadmissionModel_CVPerformance_NewKLCode.csv"), row.names = F)
+
 
 ```
 
 
 ### Hospital Length of Stay 
 
-
-## Cross-Validation (Readmission)
-
-Readmission analysis performed within a subset of our cohort, so separating the sections for this modelling
-
-### Readmission Modelling
-
-
-
-## Practice/Non-final Dendrogram Vizualization 
-
+Cross-validation data splits are the same as the mortality data 
 
 ```{r}
-# Converting the covariance matrix --> correlation matrix --> distance matrix
-  # currently simply for the highest level of the covariance matrix
-dist_mat <- as.dist(
-  1-cov2cor(tt_results$TreeCovs[[nrow(icd_cov)-1]])
-  )
 
-# Making the result easily plotted in a dendrogram
-  dendr <- dendro_data(hclust(dist_mat), type="rectangle")
+MSE <- list(c(), c(), c(), c(), c())
 
-# Modifying the axis position of the labels slightly to reduce length of the final visual
-  dendr$segments[segment(dendr)$yend==0, "yend"] <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])*0.95
-  dendr$labels$y <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])
-  dendr$labels$label <- stringr::str_replace(dendr$labels$label, "X", "")
+# fold_no = 5
+
+for (fold_no in 1:max(cv_data$fold)) {
   
-# Plot
-  ggplot() + 
-    geom_segment(data=segment(dendr), aes(x=x, y=y, xend=xend, yend=yend)) + 
-    geom_text(data=label(dendr), aes(x=x, y=y, label=label, hjust=0), size=3) +
-    coord_flip() + scale_y_reverse(expand=c(0.2, 0)) + 
-    theme(axis.line.y=element_blank(),
-          axis.ticks.y=element_blank(),
-          axis.text.y=element_blank(),
-          axis.title.y=element_blank(),
-          panel.background=element_rect(fill="white")) +
-    ggtitle("Example Dendrogram of All Data", subtitle = "Maximum Cut-Off Chosen Arbitrarily\nVisual and results incomplete, only included demonstratively")
+  train_cv <- cv_data[cv_data$fold!=fold_no, ]
+  test_cv <- cv_data[cv_data$fold==fold_no, ]
     
+  train_xmat <- train_cv %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
+  train_cov <- cov(train_xmat)
+
+  test_xmat <- test_cv %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
+  
+  tt_fold <- treelet_process(x_mat = train_xmat, cov_mat = train_cov)
+  
+  for(K in 1:length(tt_fold$basis_mats)){
+        # basis_l <- tt_fold$basis_mats[[K]][,tt_fold$retained_fts[[K]]]
+        basis_no <- tt_fold$optimal_params[i,2]
+        basis_l <- tt_fold$basis_mats[[basis_no]][,tt_fold$retained_fts[[K]]]
+        
+        k_mat <- train_xmat %*%  basis_l
+        
+        train_glm_df <- train_cv %>% select(HospitalLOS, GENDER, Age, INSURANCE) %>% cbind(., k_mat)
+        if(K==1) colnames(train_glm_df)[5] <- "`1`"     # Account for weirdness in column naming from cbind() when test_kmat has one column 
+        # train_glm <- glm(train_cv$InHospMortality ~ train_cv$GENDER + train_cv$Age + as.factor(train_cv$INSURANCE) + train_cv$HospitalLOS + k_mat ,
+        #                  family = "binomial")
+        
+        train_glm <- glm.nb(HospitalLOS ~ . , data=train_glm_df)
+        
+        test_kmat <- test_xmat %*% basis_l
+        test_glm_df <- test_cv %>% select(HospitalLOS, GENDER, Age, INSURANCE) %>% cbind(., test_kmat)
+        if(K==1) colnames(test_glm_df)[5] <- "`1`"     # Account for weirdness in column naming from cbind() when test_kmat has one column
+        
+        yhat <- predict(object = train_glm, newdata = test_glm_df, type="response") 
+      
+        MSE[[fold_no]][K] <- sum((yhat - test_cv$HospitalLOS)^2) / nrow(test_cv)
+        
+        
+    }
+}
+
+
+nb_MSE_df <- data.frame(K=c(1:length(MSE[[1]])), 
+                             MSE_F1 = MSE[[1]],
+                             MSE_F2 = MSE[[2]],
+                             MSE_F3 = MSE[[3]],
+                             MSE_F4 = MSE[[4]],
+                             MSE_F5 = MSE[[5]]) 
+
+nb_MSE_df2 <- nb_MSE_df %>% mutate(MSE_TestAvg = 
+                            rowMeans(select(nb_MSE_df, starts_with("MSE"))))
+
+write.csv(nb_MSE_df2, here("Results/LOSModel_MSE_DF_newKLCode.csv"), row.names = F)
 
 ```
 
 
-The above visualization is impossible to decipher, but (again solely for current presentation and familiaring myself with the treelet function's output structure), we can visualize the treelet for only the first 20 conjoinings/clusterings:
+## Tables & Figures
 
+Having fit the treelet models above, we can now explore the results of the cross-validation processes. Each outcome section below includes chunks that:
 
-```{r, warning=F, message=F}
-# pick zposition of interest (i.e. cut-level) and take the covariance matrix from that level
-  # tt_results$Zpos[1:20,]
+1) Plot the cross-validation error for each K parameter (`Cross-Validation Figures`) and identify the K and L|K parameter 
+2) Export the cluster membership and loadings  
+3) Build the final model on the full cross-validation set and assess test fit, including object-specific figures to be included in thesis manuscript
 
-# need to extract the numeric label to the actual diagnosis code
-  labels_df <- cov2cor(tt_results$TreeCovs[[ncol(icd_cov)-1]]) %>% colnames() %>% data.frame(code = ., label=1:178)
+### Mortality
+
+```{r}
+mortality_performance <- read.csv(here("Results/Treelet_KLOpt_WithinCVLoop/MortalityModel_CVPerformance_NoLOS_NewKLCode.csv"))
+
+k_1sd <- mortality_performance[mortality_performance$BS_TestAvg<=(min(mortality_performance$BS_TestAvg) + sd(mortality_performance$BS_TestAvg)), ] %>% .[1,1]
+
+mortality_performance <- mortality_performance %>% mutate(ParamFlag = 
+                                   case_when(
+                                     BS_TestAvg==min(BS_TestAvg) ~ "Minimizes Briers Score",
+                                     K==k_1sd ~ "More Sparse Parameter",
+                                     TRUE ~ NA_character_
+                                   )) %>% ungroup()
+
+```
+
+#### Cross-Validation Figures
+
+```{r}
+ggplot(mortality_performance, aes(x=K, y=BS_TestAvg, color = as.factor(ParamFlag))) +
+  geom_line(lwd=1.1, alpha=0.6) + geom_point(size=2.5) +
+  theme_minimal() + ggtitle("In-Hospital Mortality Model") + 
+  xlab("Value of Parameter K") + ylab("Average Briers Score (Across 5 Test Folds)") + 
+  gghighlight(ParamFlag!=0) + labs(color="Optimal Parameters") +
+  scale_color_brewer(type = "qual", palette = 6) + 
+  theme(legend.position=c(0.75, 0.75), text = element_text(size=13.5))
+
+# which.min(mortality_performance$BS_TestAvg)
+# 
+# # AUC Graph if of any interest 
+# ggplot(mortality_performance, aes(x=K, y=AUC_TestAvg)) +
+#   geom_line(lwd=1.1, alpha=0.6) + geom_point(size=2.5) +
+#   theme_minimal() + ggtitle("In-Hospital Mortality Model") +
+#   xlab("Value of Parameter K") + ylab("Average AUC (Across 5 Test Folds)")
+
+```
+
+#### Cluster Membership/Loading Export
+
+```{r}
+# Subsetting the highlighted K parameters above
+  mortality_performance[!is.na(mortality_performance$ParamFlag),]
+
+# Refitting the treelet process in our training data to pull optimal L's for our highlighted K's
+  cv_xmat <- cv_data  %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
+  cv_cov <- cov(cv_xmat)
+
+  tt_fnc_mortality <- treelet_process(cv_xmat, cv_cov)
+
+  tt_fnc_mortality$optimal_params[c(123, 174),]
+  tt_fnc_mortality$retained_fts[[123]]
   
-  codes_mat <- tt_results$Zpos[1:20,] %>% as.data.frame() %>% 
-    merge(labels_df, by.x="V1", by.y="label", all.x=T)  %>% 
-    merge(labels_df, by.x="V2", by.y="label", all.x=T) %>% 
-    select(CodeLab1=code.x, CodeLab2=code.y) %>% as.matrix()
+  # For our 1-standard deviation parameter, pulling K-features from the Lth basis matrix
+  final_basis_mortality <- tt_fnc_mortality$basis_mats[[57]][,tt_fnc_mortality$retained_fts[[123]]] %>%
+    as.data.frame() %>% 
+    mutate(LabelIndex = row_number(),
+           RowMissCount = rowSums(.==0)) %>%
+    filter(RowMissCount<123)
+
+  labels_df <- cv_cov %>% colnames() %>%
+    data.frame(code = ., label=1:ncol(cv_cov))
+
+  loading_mat_mortality <- merge(final_basis_mortality, labels_df,
+                                 all.x=T, by.y="label", by.x="LabelIndex")
 
   
+  holder <- sapply(2:(ncol(loading_mat_mortality)-2), function(x) matrix(c(loading_mat_mortality[loading_mat_mortality[,x]!=0, "code"],
+                                                                         loading_mat_mortality[loading_mat_mortality[,x]!=0, x]), 
+                                                                         ncol=2))  
   
-  dist_mat <- as.dist(
-    1 - cov2cor(tt_results$TreeCovs[[ncol(icd_cov)-1]]) %>% .[colnames(.) %in% codes_mat,colnames(.) %in% codes_mat]
-  )
-
-dendr <- dendro_data(hclust(dist_mat), type="rectangle")
-
-dendr$segments[segment(dendr)$yend==0, "yend"] <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])*0.95
-dendr$labels$y <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])
-dendr$labels$label <- stringr::str_replace(dendr$labels$label, "X", "")
-
-ggplot() + 
-  geom_segment(data=segment(dendr), aes(x=x, y=y, xend=xend, yend=yend)) + 
-  geom_text(data=label(dendr), aes(x=x, y=y, label=label, hjust=0), size=3) +
-  coord_flip() + scale_y_reverse(expand=c(0.2, 0)) + 
-  theme(axis.line.y=element_blank(),
-        axis.ticks.y=element_blank(),
-        axis.text.y=element_blank(),
-        axis.title.y=element_blank(),
-        panel.background=element_rect(fill="white"))
+  # Lazily using a for loop to transform to an exportable csv
+  i = 1
+  reformat_loadingmat <- as.data.frame(holder[[i]]) %>% mutate(Feature=case_when(row_number()==1 ~ paste("Cluster", i),
+                                                                                 TRUE ~ NA_character_)) %>% select(Feature, Code=V1, Loading=V2)
+  
+  for (i in 2:length(holder)){
+  reformat_loadingmat <- rbind(reformat_loadingmat, 
+                               as.data.frame(holder[[i]]) %>% mutate(Feature=case_when(row_number()==1 ~ paste("Cluster", i),
+                                                                                 TRUE ~ NA_character_)) %>% select(Feature, Code=V1, Loading=V2))
+  }
+  
+  write.csv(loading_mat_mortality,
+            here("Results/LoadingMatrix_Mortality.csv"))
+  
+  write.csv(reformat_loadingmat,
+            here("Results/LoadingMatrix_Mortality_Redux.csv"), na = "")
   
 
 ```
 
 
 
-Trying to subset labels in the full dendrogram
+#### Building Final Model and Assessting Test Fit
+
+Using 1-Standard Deviation Parameter, building the logistic regression model on our the 80% cross-validation subset 
+
+```{r}
+final_basis <- tt_fnc_mortality$basis_mats[[57]][,tt_fnc_mortality$retained_fts[[123]]]
+
+cv_xmat_transform <- cv_xmat %*% final_basis
+
+cv_predictors <- cv_data %>% select(GENDER, Age, INSURANCE, InHospMortality) %>% cbind(., cv_xmat_transform) %>% as.data.frame()
+
+dim(cv_predictors)
+
+train_glm <- glm(InHospMortality ~ . , data=cv_predictors, family = "binomial")
+train_glm %>% summary()
+# confint(train_glm, parm = 1:7)
+
+test_xmat <- holdout_test  %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
+test_xmat_transform <- test_xmat %*% final_basis
+test_predictors <- holdout_test %>% select(GENDER, Age, INSURANCE, InHospMortality) %>% cbind(., test_xmat_transform) %>% as.data.frame()
+
+phat <- predict(object = train_glm, newdata = test_predictors, type="response") 
+      
+brier_test <- sum((phat - test_predictors$InHospMortality)^2) / nrow(holdout_test)
+auc_test <- pROC::roc(test_predictors$InHospMortality, phat)$auc
+        
+```
+
+##### Graphing Phat Distributions
+
+```{r}
+phat_df <- as.data.frame(cbind("EventProb" = phat, "ObsOut"=test_predictors$InHospMortality))
+
+phat_df %>% ggplot(aes(x=EventProb, fill=as.factor(ObsOut))) +
+  geom_density(alpha=0.3) + theme_minimal() +
+  theme(legend.position=c(0.7, 0.6), text=element_text(size=13.5)) +
+  ylab("Density") + xlab("Predicted Probability of In-Hospital Mortality")  + 
+  scale_fill_manual(name="Observed Outcome", 
+                      labels=c("No Mortality", "Mortality Event"),
+                      values=c("lightblue", "violetred4")) +
+  ggtitle("Density Curve of Predicted Probabilities of In-Hospital Mortality")
 
 
-```{r, warning=F, message=F}
+```
 
-# Converting the covariance matrix --> correlation matrix --> distance matrix
-  # currently simply for the highest level of the covariance matrix
-dist_mat <- as.dist(
-  1-cov2cor(tt_results$TreeCovs[[nrow(icd_cov)-1]])
-  )
 
-# Making the result easily plotted in a dendrogram
-  dendr <- dendro_data(hclust(dist_mat), type="rectangle")
+##### Comparative Models 
 
-# Modifying the axis position of the labels slightly to reduce length of the final visual
-  dendr$segments[segment(dendr)$yend==0, "yend"] <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])*0.95
-  dendr$labels$y <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])
-  dendr$labels[!(dendr$labels$label %in% codes_mat), "label"] <- ""
-  dendr$labels$label <- stringr::str_replace(dendr$labels$label, "X", "")
+```{r}
+# Logistic Regression of Retained Codes, no Basis Loading Scores
+retained_codes <- loading_mat_mortality$code %>% unique()
+length(retained_codes)
 
-# Plot
-  ggplot() + 
-    geom_segment(data=segment(dendr), aes(x=x, y=y, xend=xend, yend=yend)) + 
-    geom_text(data=label(dendr), aes(x=x, y=y, label=label, hjust=0), size=3) +
-    coord_flip() + scale_y_reverse(expand=c(0.2, 0)) + 
-    theme(axis.line.y=element_blank(),
-          axis.ticks.y=element_blank(),
-          axis.text.y=element_blank(),
-          axis.title.y=element_blank(),
-          panel.background=element_rect(fill="white")) +
-    ggtitle("Example Dendrogram of All Data", subtitle = "Maximum Cut-Off Chosen Arbitrarily\nVisual and results incomplete, only included demonstratively") +
-    geom_hline(aes(yintercept=1.12), lty=2)
-  # NULL
+retain_traindf <- cv_data %>% select(GENDER, Age, INSURANCE, InHospMortality, !!retained_codes)
+
+retain_train_glm <- glm(InHospMortality ~ . , data=retain_traindf, family = "binomial")
+
+retain_test_df <- holdout_test %>% select(GENDER, Age, INSURANCE, InHospMortality, !!retained_codes)
+
+retain_phat <- predict(object = retain_train_glm, newdata = retain_test_df, type="response") 
+      
+sum((retain_phat - retain_test_df$InHospMortality)^2) / nrow(retain_test_df)
+  pROC::roc(retain_test_df$InHospMortality, retain_phat)$auc
+
+
+# Logistic Regression of All Codes
+all_traindf <- cv_data %>% select(GENDER, Age, INSURANCE, InHospMortality, matches("[0-9]$"))
+
+all_train_glm <- glm(InHospMortality ~ . , data=all_traindf, family = "binomial")
+
+all_test_df <- holdout_test %>% select(GENDER, Age, INSURANCE, InHospMortality, matches("[0-9]$"))
+
+all_phat <- predict(object = all_train_glm, newdata = all_test_df, type="response") 
+      
+sum((all_phat - all_test_df$InHospMortality)^2) / nrow(retain_test_df)
+pROC::roc(all_test_df$InHospMortality, all_phat)$auc
 
 ```
 
 
 
-Example of mean cross-validation error plot 
+
+### Readmission
+
+#### Figures of Model Validation
 
 
 ```{r}
-n <-  c(1:length(tt_results$basis))
-auc <- -(n - mean(n))^2 *rnorm(length(tt_results$basis), 0.8, 0.2)
-auc_scale <- (auc + abs(min(auc))) / abs(min(auc))
+readmit_performance <- read.csv(here("Results/Treelet_KLOpt_WithinCVLoop/ReadmissionModel_CVPerformance_NewKLCode.csv"))
+# readmit_performance <- performance_df2_readmit
+readmit_performance <- readmit_performance %>% mutate(BS_TestAvg = 
+                            rowMeans(select(readmit_performance, starts_with("BS_F"))),
+                          AUC_TestAvg =
+                            rowMeans(select(readmit_performance, starts_with("AUC_F"))))
 
-cv_sample_df <- data.frame(n=n, auc=auc_scale)
+k_1sd_readmit <- readmit_performance[readmit_performance$BS_TestAvg<=(min(readmit_performance$BS_TestAvg) + sd(readmit_performance$BS_TestAvg)), ] %>% .[1,1]
 
-ggplot(cv_sample_df, aes(x=n, y=auc)) +
-  geom_point() + geom_line() +
-      ggtitle("Example Plot of Cross-Validation Test Error",
-              subtitle = "Visual and results incomplete, only included demonstratively") +
-  theme_minimal() +
-  xlab("K") + ylab("Average Test AUC")
+readmit_performance <- readmit_performance %>% mutate(ParamFlag = 
+                                   case_when(
+                                     BS_TestAvg==min(BS_TestAvg) ~ "Minimizes Briers Score",
+                                     K==k_1sd_readmit ~ "More Sparse Parameter",
+                                     TRUE ~ NA_character_
+                                   )) %>% ungroup()
+
+ggplot(readmit_performance, aes(x=K, y=BS_TestAvg, color=as.factor(ParamFlag))) +
+  geom_line(lwd=1.1, alpha=0.6) + geom_point(size=2.5) +
+  theme_minimal() + ggtitle("Hospital Readmission Model") + 
+  xlab("Value of Parameter K") + ylab("Average Briers Score (Across 5 Test Folds)") + 
+  gghighlight(ParamFlag!=0) + labs(color="Optimal Parameters") +
+  scale_color_brewer(type = "qual", palette = 6) + 
+  theme(legend.position=c(0.65, 0.75), text = element_text(size=13.5))
+
+# AUC CV Plot if of any interest later
+# ggplot(readmit_performance, aes(x=K, y=AUC_TestAvg)) +
+#   geom_line(lwd=1.1, alpha=0.6) + geom_point(size=2.5) +
+#   theme_minimal() + ggtitle("Readmission Mortality Model") +
+#   xlab("Value of Parameter K") + ylab("Average AUC (Across 5 Test Folds)")
+
+```
+
+
+#### Cluster Membership/Loading Export
+
+```{r}
+readmit_performance [!is.na(readmit_performance $ParamFlag),]
+
+cv_readmit_xmat <- cv_data_readmit  %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
+cv_readmit_cov <- cov(cv_readmit_xmat)
+
+tt_fnc_readmit <- treelet_process(cv_readmit_xmat, cv_readmit_cov)
+
+tt_fnc_readmit$optimal_params[c(readmit_performance [!is.na(readmit_performance $ParamFlag),] %>% pull(K)),]
+
+# Matrix of loadings 
+ # For our 1-standard deviation parameter, pulling K-features from the Lth basis matrix
+  final_basis_readmit <- tt_fnc_readmit$basis_mats[[177]][,tt_fnc_readmit$retained_fts[[30]]] %>%
+    as.data.frame() %>% 
+    mutate(LabelIndex = row_number(),
+           RowMissCount = rowSums(.==0)) %>%
+    filter(RowMissCount<30)
+
+  
+  labels_df <- cv_readmit_cov %>% colnames() %>%
+    data.frame(code = ., label=1:ncol(cv_readmit_cov))
+
+  loading_mat_readmit <- merge(final_basis_readmit, labels_df,
+                                 all.x=T, by.y="label", by.x="LabelIndex")
+
+  
+  holder <- sapply(2:(ncol(loading_mat_readmit)-2), function(x) matrix(c(loading_mat_readmit[loading_mat_readmit[,x]!=0, "code"],
+                                                                         loading_mat_readmit[loading_mat_readmit[,x]!=0, x]), 
+                                                                         ncol=2))  
+  
+  # Lazily using a for loop to transform to an exportable csv
+  i = 1
+  reformat_loadingmat_readmit <- as.data.frame(holder[[i]]) %>% mutate(Feature=case_when(row_number()==1 ~ paste("Cluster", i),
+                                                                                 TRUE ~ NA_character_)) %>% select(Feature, Code=V1, Loading=V2)
+  
+  for (i in 2:length(holder)){
+  reformat_loadingmat_readmit <- rbind(reformat_loadingmat_readmit, 
+                               as.data.frame(holder[[i]]) %>% mutate(Feature=case_when(row_number()==1 ~ paste("Cluster", i),
+                                                                                 TRUE ~ NA_character_)) %>% select(Feature, Code=V1, Loading=V2))
+  }
+  
+  length(unique(reformat_loadingmat_readmit$Code))
+  
+  write.csv(loading_mat_readmit,
+            here("Results/LoadingMatrix_Readmit.csv"))
+  
+  write.csv(reformat_loadingmat_readmit,
+            here("Results/LoadingMatrix_Readmit_Redux.csv"), na = "")
+  
+
+```
+
+
+
+#### Building Final Model & Assessing Test Fit 
+Using 1-Standard Deviation Parameter, building the logistic regression model on our the 80% cross-validation subset 
+
+```{r}
+final_basis_readmit <- tt_fnc_readmit$basis_mats[[177]][,tt_fnc_readmit$retained_fts[[30]]]
+
+cv_xmat_transform_readmit <- cv_readmit_xmat %*% final_basis_readmit
+
+cv_predictors_readmit <- cv_data_readmit %>% select(GENDER, Age, INSURANCE, Yr1Readmit) %>% cbind(., cv_xmat_transform_readmit) %>% as.data.frame()
+
+train_glm_readmit <- glm(Yr1Readmit ~ . , data=cv_predictors_readmit, family = "binomial")
+train_glm_readmit %>% summary()
+confint(train_glm, parm = 1:7)
+
+
+test_xmat_readmit <- holdout_test_readmit  %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
+test_xmat_transform <- test_xmat_readmit %*% final_basis_readmit
+
+test_predictors_readmit <- holdout_test_readmit %>% select(GENDER, Age, INSURANCE, Yr1Readmit) %>% cbind(., test_xmat_transform) %>% as.data.frame()
+
+phat_readmit <- predict(object = train_glm_readmit, newdata = test_predictors_readmit, type="response") 
+      
+brier_test <- sum((phat_readmit - test_predictors_readmit$Yr1Readmit)^2) / nrow(test_predictors_readmit)
+auc_test <- pROC::roc(test_predictors_readmit$Yr1Readmit, phat_readmit)$auc
+brier_test
+auc_test
+```
+
+##### Graphing Phat Distributions
+
+```{r}
+phat_readmit_df <- as.data.frame(cbind("EventProb" = phat_readmit, "ObsOut"=test_predictors_readmit$Yr1Readmit))
+
+phat_readmit_df %>% ggplot(aes(x=EventProb, fill=as.factor(ObsOut))) +
+  geom_density(alpha=0.3) + theme_minimal() +
+  theme(legend.position=c(0.7, 0.6), text=element_text(size=13.5)) +
+  ylab("Density") + xlab("Predicted Probability of Unplanned Hospital Readmission")  + 
+  scale_fill_manual(name="Observed Outcome", 
+                      labels=c("No Readmission", "Readmission"),
+                      values=c("lightblue", "violetred4")) +
+  ggtitle("Density Curve of Predicted Probabilities of Unplanned Hospital Readmission")
 
 
 ```
 
-=======
----
-title: "Treelet Transform: Identifing clusters of ICD-9 Diagnoses in a Boston Trauma Center"
-subtitle: "Data Analysis: Treelet & GLM Fitting"
-author: "Dominic DiSanto\n Master's Thesis"
-date: "Updated 9/20/2020"
-output: 
-  html_document:
-    keep_md: true
-    toc: true
-    toc_depth: '3'
-    code_folding: show
----
 
-## Preparation
+##### Comparative Models 
+
+```{r}
+# Logistic Regression of Retained Codes, no Basis Loading Scores
+retained_codes_readmit <- loading_mat_readmit$code %>% unique()
+length(retained_codes_readmit)
+
+retain_traindf_readmit <- cv_data_readmit %>% select(GENDER, Age, INSURANCE, Yr1Readmit, !!retained_codes_readmit)
+
+retain_train_glm_readmit <- glm(Yr1Readmit ~ . , data=retain_traindf_readmit, family = "binomial")
+
+retain_test_df_readmit <- holdout_test_readmit %>% select(GENDER, Age, INSURANCE, Yr1Readmit, !!retained_codes_readmit)
+
+retain_phat_readmit <- predict(object = retain_train_glm_readmit, newdata = retain_test_df_readmit, type="response") 
+      
+sum((retain_phat_readmit - retain_test_df_readmit$Yr1Readmit)^2) / length(retain_phat_readmit)
+  pROC::roc(retain_test_df_readmit$Yr1Readmit, retain_phat_readmit)$auc
 
 
-## Libraries
-```{r, message=F, warning=FALSE}
-library(magrittr) # Ceci n'est pas une %>%, loaded via dplyr also but liked to include for transparency 
-library(dplyr) # General data management, cleaning (admittedly I switch between Base R and tidyverse as I code, somewhat stream-of-consciousness ly)
-library(ggplot2) # Visualization
-library(comorbidity) # Used to easily generate Elixhauser comorbdity grouping/categorization [8/23/2020 Note: may be excluded if Elixhauser or Charlson not used]
-library(tidyr) # pivot functions for transposing data to/from long and wide
-library(icd) # used in validity check of diagnoses codes
-library(lubridate) # used in evaluating dates, most notably in date of death 
-library(lares) # corr_cross function used to identify the top correlations within a data frame/design matrix
-library(corrplot) # used for visualizing correlation matrices
-library(here) # Used for data-calls/ease of file path storage usage 
-library(treelet) # Used for treelet analysis 
-library(ggdendro) # Used for dendrogram visualization of Treelet analysis
+# Logistic Regression of All Codes
+all_traindf_readmit <- cv_data_readmit %>% select(GENDER, Age, INSURANCE, Yr1Readmit, matches("[0-9]$"))
+
+all_train_glm_readmit <- glm(Yr1Readmit ~ . , data=all_traindf_readmit, family = "binomial")
+
+all_test_df_readmit <- holdout_test_readmit %>% select(GENDER, Age, INSURANCE, Yr1Readmit, matches("[0-9]$"))
+
+all_phat_readmit <- predict(object = all_train_glm_readmit, newdata = all_test_df_readmit, type="response") 
+      
+sum((all_phat_readmit - all_test_df_readmit$Yr1Readmit)^2) / length(all_phat_readmit)
+pROC::roc(all_test_df_readmit$Yr1Readmit, all_phat_readmit)$auc
 ```
 
 
-## File Path & Import
 
-This is my first attempt at using the `here` package for improved functionality of this program. I believe to use the `here` package as written in my program, your data simply need to be contained in a sub-folder called **Data** from where you've saved this file. For transparency, I'll describe my general (and I think simplistic) file structure for this analysis: Within a general project folder (say `Treelet`), this script and it's output are contained in an ***"Analysis"*** subfolder and the data within a ***Data*** subfolder of the same project folder. For the raw input data from MIMIC, I included a **Raw** sub-folder within the **Data** folder (to isolate raw MIMIC data from any exported data files or cleaned data). 
 
-Because I contain my analysis in a sub-folder of my main project file, I had to therefore manually set my `.here` file one level above my analytic file. If you happen to mirror my file structure, you must simply use the command `set_here("../")`, which will create a `.here` file in your root folder, a level above the analytic subfolder.      
+
+
+### Length of Stay 
+
+
+
+
+#### Figures of Model Validation
+
+```{r}
+los_performance <- read.csv(here("Results/Treelet_KLOpt_WithinCVLoop/LOSModel_MSE_DF_NewKLCode.csv"))
+# los_performance <- read.csv(here("Results/Treelet_KKOpt_WithinCVLoop/LOSModel_MSE_DF.csv"))
+
+k_1sd_los <- los_performance[los_performance$MSE_TestAvg<=(min(los_performance$MSE_TestAvg) + sd(los_performance$MSE_TestAvg)), ] %>% .[1,1]
+
+los_performance <- los_performance %>% mutate(ParamFlag = 
+                                   case_when(
+                                     MSE_TestAvg==min(MSE_TestAvg) ~ "Minimizes MSE",
+                                     K==k_1sd_los ~ "More Sparse Parameter",
+                                     TRUE ~ NA_character_
+                                   )) %>% ungroup()
+
+
+ggplot(los_performance, aes(x=K, y=MSE_TestAvg, color = as.factor(ParamFlag))) +
+  geom_line(lwd=1.1, alpha=0.6) + geom_point(size=2.5) +
+  theme_minimal() + ggtitle("Hospital Length of Stay Model") + 
+  xlab("Value of Parameter K") + ylab("Average Mean-Squared Error\n(Across 5 Test Folds)") + 
+  gghighlight(ParamFlag!=0) + labs(color="Optimal Parameters") +
+  scale_color_brewer(type = "qual", palette = 6) + 
+  theme(legend.position=c(0.75, 0.75), text = element_text(size=13.5))
+
+```
+
+#### Cluster Membership/Loading Export
+
+```{r}
+los_performance [!is.na(los_performance $ParamFlag),]
+
+cv_los_xmat <- cv_data  %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
+cv_los_cov <- cov(cv_los_xmat)
+
+tt_fnc_los <- treelet_process(cv_los_xmat, cv_los_cov)
+
+tt_fnc_los$optimal_params[c(46, 115),]
+tt_fnc_los$retained_fts[[46]]
+
+# Matrix of loadings 
+ # For our 1-standard deviation parameter, pulling K-features from the Lth basis matrix
+  final_basis_los <- tt_fnc_los$basis_mats[[63]][,tt_fnc_los$retained_fts[[46]]] %>%
+    as.data.frame() %>% 
+    mutate(LabelIndex = row_number(),
+           RowMissCount = rowSums(.==0)) %>%
+    filter(RowMissCount<46)
+
+  labels_df <- cv_los_cov %>% colnames() %>%
+    data.frame(code = ., label=1:ncol(cv_los_cov))
+
+  loading_mat_los <- merge(final_basis_los, labels_df,
+                                 all.x=T, by.y="label", by.x="LabelIndex")
+
+  
+  holder <- sapply(2:(ncol(loading_mat_los)-2), function(x) matrix(c(loading_mat_los[loading_mat_los[,x]!=0, "code"],
+                                                                     loading_mat_los[loading_mat_los[,x]!=0, x]),
+                                                                   ncol=2))  
+  
+  # Lazily using a for loop to transform to an exportable csv
+  i = 1
+  reformat_loadingmat_los <- as.data.frame(holder[[i]]) %>% mutate(Feature=case_when(row_number()==1 ~ paste("Cluster", i),
+                                                                                 TRUE ~ NA_character_)) %>% select(Feature, Code=V1, Loading=V2)
+  
+  for (i in 2:length(holder)){
+  reformat_loadingmat_los <- rbind(reformat_loadingmat_los, 
+                               as.data.frame(holder[[i]]) %>% mutate(Feature=case_when(row_number()==1 ~ paste("Cluster", i),
+                                                                                 TRUE ~ NA_character_)) %>% select(Feature, Code=V1, Loading=V2))
+  }
+  
+  length(unique(reformat_loadingmat_los$Code))
+  
+  write.csv(loading_mat_los,
+            here("Results/LoadingMatrix_LOS.csv"))
+  
+  write.csv(reformat_loadingmat_los,
+            here("Results/LoadingMatrix_LOS_Redux.csv"), na = "")
+  
+
+```
+
+
+
+#### Building Final Model and Assessting Test Fit
+
+Using 1-Standard Deviation Parameter, building the logistic regression model on our the 80% cross-validation subset 
+
+```{r}
+final_basis <- tt_fnc_los$basis_mats[[63]][,tt_fnc_los$retained_fts[[46]]]
+
+cv_xmat_transform <- cv_xmat %*% final_basis
+
+cv_predictors <- cv_data %>% select(GENDER, Age, INSURANCE, HospitalLOS) %>% cbind(., cv_xmat_transform) %>% as.data.frame()
+
+dim(cv_predictors)
+
+train_glm_los <- glm.nb(HospitalLOS ~ . , data=cv_predictors)
+train_glm_los %>% summary()
+confint(train_glm_los, parm = 1:7)
+
+test_xmat <- holdout_test  %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
+test_xmat_transform <- test_xmat %*% final_basis
+test_predictors <- holdout_test %>% select(GENDER, Age, INSURANCE, HospitalLOS) %>% cbind(., test_xmat_transform) %>% as.data.frame()
+
+yhat <- predict(object = train_glm_los, newdata = test_predictors, type="response") 
+      
+MSE <- sum((yhat - test_predictors$HospitalLOS)^2) / nrow(holdout_test)
+```
+
+##### Scatterplot of Observed vs Predictive
+
+```{r}
+yhat_df <- as.data.frame(cbind("PredictedLOS" = yhat, "ObservedLOS"=test_predictors$HospitalLOS))
+
+
+# 
+# inset <- yhat_df %>% ggplot(aes(x=ObservedLOS, y=PredictedLOS, color=as.factor(PredictedLOS>ObservedLOS))) +
+#   geom_point(alpha=0.3) + theme_minimal() +
+#   theme(legend.position="none", text=element_text(size=13.5)) + scale_color_manual(values=c("lightblue", "violetred4")) +
+#   xlim(c(0, 100)) + ylim(c(0, 50)) + 
+#   # ylab("Predicted Length of Stay") + xlab("Observed Length of Stay")  + 
+#   # scale_color_manual(name="Prediction Error Direction", 
+#   #                     labels=c("Predicted LOS > Observed LOS", "Predicted LOS < Observed LOS"),
+#   #                     values=c("lightblue", "violetred4")) +
+#   # ggtitle("Scatter Plot of Predicted and Observed Length of Stay Values")
+#   NULL
+# 
+# 
+# inset_tibble <- tibble(y=25, x=200,
+#                        plot=list(inset))
+
+yhat_df %>% ggplot(aes(x=ObservedLOS, y=PredictedLOS, color=as.factor(PredictedLOS>ObservedLOS))) +
+  geom_point(alpha=0.3) + theme_minimal() +
+  theme(legend.position=c(0.7, 0.6), text=element_text(size=13.5)) +
+  ylab("Predicted Length of Stay") + xlab("Observed Length of Stay")  +
+  scale_color_manual(name="Prediction Error Direction",
+                      labels=c("Predicted LOS > Observed LOS", "Predicted LOS < Observed LOS"),
+                      values=c("dodgerblue", "violetred4")) +
+  ggtitle("Scatter Plot of Predicted and Observed Length of Stay Values") +
+  # geom_text(x=125, y=30, label="Correlation of Predicted and\nObserved Length of Stay Values = 0.393") + 
+  NULL 
+
+```
+
+##### Distribution of Observed and Predicted LOS Values
+
+```{r}
+los_dens_df <- rbind(yhat_df %>% select(LOS=PredictedLOS) %>% mutate(Type="Predicted"),
+                     yhat_df %>% select(LOS=ObservedLOS) %>% mutate(Type="Observed"))
+
+los_dens_df %>% ggplot(aes(x=LOS, fill=as.factor(Type))) +
+  geom_density(alpha=0.3) + theme_minimal() +
+  theme(legend.position=c(0.7, 0.6), text=element_text(size=13.5)) +
+  ylab("Density") + xlab("Length of Stay Value (Days)")  + 
+  scale_fill_manual(name="Type of Data", 
+                      labels=c("Observed", "Predicted"),
+                      values=c("lightblue", "violetred4")) +
+  ggtitle("Density Curve of Predicted & Observed Length of Stay Values") +
+  xlim(c(0, 75))
+
+
+```
+
+
+
+##### Comparative Models 
+
+```{r}
+# Logistic Regression of Retained Codes, no Basis Loading Scores
+retained_codes <- loading_mat_los$code %>% unique()
+length(retained_codes)
+
+retain_traindf <- cv_data %>% select(GENDER, Age, INSURANCE, InHospMortality, !!retained_codes)
+
+retain_train_glm <- glm(InHospMortality ~ . , data=retain_traindf, family = "binomial")
+
+retain_test_df <- holdout_test %>% select(GENDER, Age, INSURANCE, InHospMortality, !!retained_codes)
+
+retain_phat <- predict(object = retain_train_glm, newdata = retain_test_df, type="response") 
+      
+sum((retain_phat - retain_test_df$InHospMortality)^2) / nrow(retain_test_df)
+  pROC::roc(retain_test_df$InHospMortality, retain_phat)$auc
+
+
+# Logistic Regression of All Codes
+all_traindf <- cv_data %>% select(GENDER, Age, INSURANCE, InHospMortality, matches("[0-9]$"))
+
+all_train_glm <- glm(InHospMortality ~ . , data=all_traindf, family = "binomial")
+
+all_test_df <- holdout_test %>% select(GENDER, Age, INSURANCE, InHospMortality, matches("[0-9]$"))
+
+all_phat <- predict(object = all_train_glm, newdata = all_test_df, type="response") 
+      
+sum((all_phat - all_test_df$InHospMortality)^2) / nrow(retain_test_df)
+pROC::roc(all_test_df$InHospMortality, all_phat)$auc
+```
+
+
+
+## Appendix Analysis: Comparative Models
+
+
+Exploratory analysis to see how the results of the treelet modelling above compares with the application of PCA, lasso, and possibly the use of the Charlson and/or Elixhauser comorbidity indexes as a predictor 
+
 
 
 ```{r}
-here()
+require(caret)
 
-cohort_full <-  read.csv(here("Data", "cohort_full.csv"))
-colnames(cohort_full) <- cohort_full %>% colnames() %>% gsub(pattern = "X", "", x = .)
-cohort_full %>% head()
+cv5 <- trainControl(method="cv", 
+                    number=5)
+
+cv_data %>% head()
+cv_data_readmit %>% head()
 ```
 
 
-```{r}
-icd_pca <- cohort_full %>% select(starts_with("X")) %>% prcomp(center=T, scale=T)
+###  Mortality
 
-icd_pca_df <- data.frame(PC = 1:178,
-                         Var = icd_pca$sdev^2) %>% 
+
+#### LASSO
+
+```{r}
+lasso_mortality <-  train(as.factor(InHospMortality) ~ .,
+                   data = cv_data %>% select(matches("^[0-9]"), InHospMortality, Age, GENDER, INSURANCE), 
+                   method="glmnet",
+                   metric="AUC",
+                   trControl=cv5)
+
+
+lasso_mortality$finalModel %>% str()
+
+phat_lasso <- predict(object = lasso_mortality, newdata = holdout_test, type="prob")
+
+lasso_mortality$finalModel
+
+pROC::roc(holdout_test$InHospMortality, phat_lasso[,1])
+
+```
+
+
+#### PCA
+```{r}
+pca_results <- prcomp(cv_data %>% select(matches("^[0-9]")), center = T, scale. = T)
+
+(pca_mortality_df <- data.frame(PC = 1:178,
+                         Var = pca_results$sdev^2) %>% 
               mutate(PropVar = Var / nrow(.),
-                     CmltvPropVar = cumsum(PropVar))
+                     CmltvPropVar = cumsum(PropVar)))
 
-icd_pca_df %>% ggplot(aes(x=PC, y=PropVar)) +
-  geom_point(size=5, alpha=0.4) + geom_line(lwd=0.75) + theme_minimal() +
-  ylab("Proportion of Variance Explained") + xlab("Principal Component") +
-  ggtitle("Proportion of Variance Explained by Individual Principal Component")
 
-icd_pca_df %>% ggplot(aes(x=PC, y=CmltvPropVar)) +
-  geom_point(size=5, alpha=0.4) + geom_line(lwd=0.75) + theme_minimal() +
-  ylab("Cumulative Proportion of Variance Explained") + xlab("Principal Component") +
-  ggtitle("Cumulative Proportion of Variance Explained by Principal Component")
+# pca_mortality_df %>% ggplot(aes(x=PC, y=PropVar)) +
+#   geom_point(size=5, alpha=0.4) + geom_line(lwd=0.75) + theme_minimal() +
+#   ylab("Proportion of Variance Explained") + xlab("Principal Component") +
+#   ggtitle("Proportion of Variance Explained by Individual Principal Component")
+# 
+# 
+# pca_mortality_df %>% ggplot(aes(x=PC, y=CmltvPropVar)) +
+#   geom_point(size=5, alpha=0.4) + geom_line(lwd=0.75) + theme_minimal() +
+#   ylab("Cumulative Proportion of Variance Explained") + xlab("Principal Component") +
+#   ggtitle("Cumulative Proportion of Variance Explained by Principal Component")
 
-```
 
+rotate_icd <- (cv_data %>% select(matches("^[0-9]")) %>% as.matrix())  %*%  pca_results$rotation[,1:75]
 
 
+pca_glm <- glm(InHospMortality ~ . ,
+               data = cv_data %>% select(InHospMortality, Age, GENDER, INSURANCE) %>% cbind(., rotate_icd),
+               family="binomial")   
 
-### Preliminary Treelet
 
-
-Full dendrogram of our treelet, not particularly useful/insightful but thanfully it is simple and quick to fit our treelet, retaining results for all levels
-```{r, warning=F, message=F}
-# compute correlation matrix
-# icd_cor <- cohort_full %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>%  cor()
-icd_cov <- cohort_full %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>%  cov()
-
-# run treelet
-tt_results <- treelet::Run_JTree(icd_cov, nrow(icd_cov)-1, 1:nrow(icd_cov)-1)
-```
-
-
-## Treelet Model Fitting
-
-
-```{r}
-# tt_results %>% str()
-```
-
-
-### Energy Score Identification
-
-In this first chunk, I identify the energy of all $i=1,2,..., p-1$ vectors $w_i$ for all $L$ basis matrices:
-
-```{r}
-x_mat <- as.matrix(cohort_full %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit))
-energy <- list()
-
-for(L in 1:length(tt_results$basis)) {
-    # energy[[k]] <- matrix(nrow=ncol(x_mat), ncol=2,
-                          # dimnames = list(NULL, c("J", "Energy")))
-
-    basisk <- tt_results$basis[[L]]
-    w_x <- t(basisk) %*% t(x_mat)
-
-      num_vec <- rowSums(abs(w_x)^2)
-      den_vec <- x_mat^2 %>% colSums()
-          names(num_vec) <- NULL
-          names(den_vec) <- NULL
-
-    energy[[L]] <- matrix(c(1:ncol(x_mat), num_vec / den_vec), ncol=2, dimnames = list(NULL, c("W_i", "Energy")))
-}
-
-```
-
-We then want to identify for a given $K$ the $L$ basis matrix that maximizes the normalized energy sum ($\sum_{i=1}^K \varepsilon_i$). I will store these results in an $K\times 2$ matrix, with the first column representing the given $K$ value and the second the $L$ that maximies the energy.
-
-```{r}
-optimal_L <- matrix(c(1:length(energy), rep(NA, length(energy))), nrow=length(energy), dimnames = list(NULL, c("K", "Optimal L")))
-retained_fts <- rep(list(rep(list(rep(NA, length(energy))), length(energy))), length(energy))
-
-
-energy_ordered <- lapply(1:length(energy), function(L) energy[[L]][energy[[L]][,2] %>% order(decreasing = T),])
-
-energy_ordered[[2]]
-
-optimal_L <- matrix(c(1:length(energy_ordered),
-                    sapply(1:length(energy_ordered), 
-                           function(K) which.max(sapply(1:length(energy), 
-                                                        function(x) sum(energy_ordered[[x]][1:K,2])
-                                                        )
-                                                 ))),
-                    ncol=2, dimnames=list(NULL, c("GivenK", "OptimalBasis_L")))
-
-retained_fts <- lapply(1:length(energy_ordered),
-                            function(x) energy_ordered[[optimal_L[x,2]]][optimal_L[1:x,1], 1])
-
-optimal_L
-
-```
-
-
-Now let's try fitting our models? Honestly I'm a little scared lmao
-
-First I'm going to combine the above code into a function, since I will need to replicate treelet within our cross-validation folds:
-
-```{r}
-treelet_process <- function(x_mat, cov_mat){
-
-tt_results <- tt_results <- treelet::Run_JTree(cov_mat, nrow(cov_mat)-1, 1:nrow(cov_mat)-1)
-
-  for(L in 1:length(tt_results$basis)) {
-    # energy[[k]] <- matrix(nrow=ncol(x_mat), ncol=2,
-                          # dimnames = list(NULL, c("J", "Energy")))
-
-    basisk <- tt_results$basis[[L]]
-    w_x <- t(basisk) %*% t(x_mat)
-
-      num_vec <- rowSums(abs(w_x)^2)
-      den_vec <- x_mat^2 %>% colSums()
-          names(num_vec) <- NULL
-          names(den_vec) <- NULL
-
-    energy[[L]] <- matrix(c(1:ncol(x_mat), num_vec / den_vec), ncol=2, dimnames = list(NULL, c("W_i", "Energy")))
-}
-
-# Creating blank objects  
-optimal_L <- matrix(c(1:length(energy), rep(NA, length(energy))), nrow=length(energy), dimnames = list(NULL, c("K", "Optimal L")))
-retained_fts <- rep(list(rep(list(rep(NA, length(energy))), length(energy))), length(energy))
-
-# Reordering the energy matrices in descending order of normed energy score
-energy_ordered <- lapply(1:length(energy), function(L) energy[[L]][energy[[L]][,2] %>% order(decreasing = T),])
-
-# Identifying optimal L
-  optimal_L <- matrix(c(1:length(energy_ordered),
-                    sapply(1:length(energy_ordered), 
-                           function(K) which.max(sapply(1:length(energy), 
-                                                        function(x) sum(energy_ordered[[x]][1:K,2])
-                                                        )
-                                                 ))),
-                    ncol=2, dimnames=list(NULL, c("GivenK", "OptimalBasis_L")))
-# And retained fts
-retained_fts <- lapply(1:length(energy_ordered),
-                            function(x) energy_ordered[[optimal_L[x,2]]][optimal_L[1:x,1], 1])
-
-  return(list(basis_mats=tt_results$basis,
-              optimal_params=optimal_L,
-              retained_fts=retained_fts))
-}
-```
-
-
-```{r}
-optimal_L
-
-i=1
-str(retained_fts)
-retained_fts[[optimal_L[i,1]]]
-
-tt_results$basis[[optimal_L[i,2]]] %>% str()
-
-
-```
-
-
-```{r}
-cohort_full %>% select(matches("[a-z]"))
-
-phat <- glm(InHospMortality ~ GENDER + Age + as.factor(INSURANCE) + HospitalLOS + , data=cohort_full, family = "binomial") %>% predict()
-
-pROC::roc(cohort_full$InHospMortality, phat)
-
-```
-
-
-### Dendrogram Vizualization 
-
-
-```{r}
-# Converting the covariance matrix --> correlation matrix --> distance matrix
-  # currently simply for the highest level of the covariance matrix
-dist_mat <- as.dist(
-  1-cov2cor(tt_results$TreeCovs[[nrow(icd_cov)-1]])
-  )
-
-# Making the result easily plotted in a dendrogram
-  dendr <- dendro_data(hclust(dist_mat), type="rectangle")
-
-# Modifying the axis position of the labels slightly to reduce length of the final visual
-  dendr$segments[segment(dendr)$yend==0, "yend"] <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])*0.95
-  dendr$labels$y <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])
-  dendr$labels$label <- stringr::str_replace(dendr$labels$label, "X", "")
-  
-# Plot
-  ggplot() + 
-    geom_segment(data=segment(dendr), aes(x=x, y=y, xend=xend, yend=yend)) + 
-    geom_text(data=label(dendr), aes(x=x, y=y, label=label, hjust=0), size=3) +
-    coord_flip() + scale_y_reverse(expand=c(0.2, 0)) + 
-    theme(axis.line.y=element_blank(),
-          axis.ticks.y=element_blank(),
-          axis.text.y=element_blank(),
-          axis.title.y=element_blank(),
-          panel.background=element_rect(fill="white")) +
-    ggtitle("Example Dendrogram of All Data", subtitle = "Maximum Cut-Off Chosen Arbitrarily\nVisual and results incomplete, only included demonstratively")
-    
-
-```
-
-
-The above visualization is impossible to decipher, but (again solely for current presentation and familiaring myself with the treelet function's output structure), we can visualize the treelet for only the first 20 conjoinings/clusterings:
-
-
-```{r, warning=F, message=F}
-# pick zposition of interest (i.e. cut-level) and take the covariance matrix from that level
-  # tt_results$Zpos[1:20,]
-
-# need to extract the numeric label to the actual diagnosis code
-  labels_df <- cov2cor(tt_results$TreeCovs[[ncol(icd_cov)-1]]) %>% colnames() %>% data.frame(code = ., label=1:178)
-  
-  codes_mat <- tt_results$Zpos[1:20,] %>% as.data.frame() %>% 
-    merge(labels_df, by.x="V1", by.y="label", all.x=T)  %>% 
-    merge(labels_df, by.x="V2", by.y="label", all.x=T) %>% 
-    select(CodeLab1=code.x, CodeLab2=code.y) %>% as.matrix()
-
+test_rotate <- (holdout_test %>% select(matches("^[0-9]")) %>% as.matrix())  %*%  pca_results$rotation[,1:75]
   
   
-  dist_mat <- as.dist(
-    1 - cov2cor(tt_results$TreeCovs[[ncol(icd_cov)-1]]) %>% .[colnames(.) %in% codes_mat,colnames(.) %in% codes_mat]
-  )
+test_pcadf <- holdout_test %>% select(InHospMortality, Age, GENDER, INSURANCE) %>% cbind(., test_rotate)
 
-dendr <- dendro_data(hclust(dist_mat), type="rectangle")
+test_pca_phat <- predict(newdata = test_pcadf, object=pca_glm, type="response")
 
-dendr$segments[segment(dendr)$yend==0, "yend"] <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])*0.95
-dendr$labels$y <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])
-dendr$labels$label <- stringr::str_replace(dendr$labels$label, "X", "")
-
-ggplot() + 
-  geom_segment(data=segment(dendr), aes(x=x, y=y, xend=xend, yend=yend)) + 
-  geom_text(data=label(dendr), aes(x=x, y=y, label=label, hjust=0), size=3) +
-  coord_flip() + scale_y_reverse(expand=c(0.2, 0)) + 
-  theme(axis.line.y=element_blank(),
-        axis.ticks.y=element_blank(),
-        axis.text.y=element_blank(),
-        axis.title.y=element_blank(),
-        panel.background=element_rect(fill="white"))
+pROC::roc(predict = test_pca_phat, response = holdout_test$InHospMortality)
   
-
 ```
 
 
-
-Trying to subset labels in the full dendrogram
-
-
-```{r, warning=F, message=F}
-
-# Converting the covariance matrix --> correlation matrix --> distance matrix
-  # currently simply for the highest level of the covariance matrix
-dist_mat <- as.dist(
-  1-cov2cor(tt_results$TreeCovs[[nrow(icd_cov)-1]])
-  )
-
-# Making the result easily plotted in a dendrogram
-  dendr <- dendro_data(hclust(dist_mat), type="rectangle")
-
-# Modifying the axis position of the labels slightly to reduce length of the final visual
-  dendr$segments[segment(dendr)$yend==0, "yend"] <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])*0.95
-  dendr$labels$y <- min(segment(dendr)[segment(dendr)$yend>0, "yend"])
-  dendr$labels[!(dendr$labels$label %in% codes_mat), "label"] <- ""
-  dendr$labels$label <- stringr::str_replace(dendr$labels$label, "X", "")
-
-# Plot
-  ggplot() + 
-    geom_segment(data=segment(dendr), aes(x=x, y=y, xend=xend, yend=yend)) + 
-    geom_text(data=label(dendr), aes(x=x, y=y, label=label, hjust=0), size=3) +
-    coord_flip() + scale_y_reverse(expand=c(0.2, 0)) + 
-    theme(axis.line.y=element_blank(),
-          axis.ticks.y=element_blank(),
-          axis.text.y=element_blank(),
-          axis.title.y=element_blank(),
-          panel.background=element_rect(fill="white")) +
-    ggtitle("Example Dendrogram of All Data", subtitle = "Maximum Cut-Off Chosen Arbitrarily\nVisual and results incomplete, only included demonstratively") +
-    # geom_hline(aes(yintercept=1.2))
-    NULL
-
-```
+### Charlson & Elixhauser
 
 
 
->>>>>>> 948a085519542b7f61feed9aa571dd330a19939b
+#### LASSO
+
+
+#### PCA
+
+
+#### Charlson & Elixhauser
