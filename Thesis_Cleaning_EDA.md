@@ -208,11 +208,11 @@ admit_pts %>%
 
 ```
 ##   SUBJECT_ID Age                 DOD           DISCHTIME
-## 1      16352  67 2203-01-07 00:00:00 2197-04-11 16:25:00
-## 2      62298  75 2164-09-20 00:00:00 2164-06-18 16:40:00
-## 3      18299  71 2199-02-25 00:00:00 2196-02-23 15:45:00
-## 4      81267  90 2168-04-21 00:00:00 2166-01-29 16:51:00
-## 5      25137  47 2111-12-31 00:00:00 2111-09-07 17:25:00
+## 1      19246  58 2131-02-14 00:00:00 2126-06-08 15:17:00
+## 2      11728  57 2178-12-27 00:00:00 2173-04-21 16:25:00
+## 3      26063  80 2131-10-28 00:00:00 2131-10-25 15:40:00
+## 4      89287  84 2114-08-31 00:00:00 2113-11-18 17:48:00
+## 5      20409  47 2121-01-05 00:00:00 2119-04-14 12:28:00
 ```
 
 ```r
@@ -380,11 +380,6 @@ admit_pts <- admit_pts %>% mutate(TimeToMort =
 ```
 
 
- A parting parting note to self for this data element, whenever I wanted to check my data cleaning, I was tempted to compare the number of `SUBJECT_ID`'s with more than one `HADM_ID` in our raw  `ADMISSIONS` table to the numbe rof patients with a missing `TimeToReadmit` value. I have to remember, however, that I removed elective admissions form the `TimeToReadmit` calculation, so these values will **not** be equivalent.
-
-
-
-
 
 ### Diagnoses Codes
 
@@ -440,11 +435,11 @@ icd_precln %>% sample_n(5)
 
 ```
 ##   SUBJECT_ID HADM_ID SEQ_NUM ICD9_CODE
-## 1      88764  184080       3     42822
-## 2      21606  105325       1       042
-## 3      68089  191784       2       412
-## 4      47983  156024      16     27669
-## 5       1579  131236       2     51881
+## 1      16883  119785      13      2773
+## 2      42728  142693       2      3363
+## 3      25787  180521       1       430
+## 4      24569  156589       8     25000
+## 5       6062  186821       5      4589
 ```
 
 ##### Checking Code Definitions
@@ -559,7 +554,7 @@ icd_cohort %>% count(ICD9_CODE)  %>% arrange(desc(n)) %>% filter(!is.na(ICD9_COD
     theme(axis.text.x=element_blank(), text=element_text(size=13.5))
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-21-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-20-1.png)<!-- -->
 
 
 As it is impossible to elucidate much useful information from this visual, due to the volume of data, we can examine simply the most common diagnoses codes, arbitrarily picking the top 15 for legibility of plots:
@@ -603,7 +598,7 @@ icd_cohort %>% count(ICD9_CODE) %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE
     theme(axis.text.x=element_text(angle=60, vjust=0.9, hjust=0.8))
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-22-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-21-1.png)<!-- -->
 
 ```r
     # this is a really unfortunately x-axis, couldn't find a better angle or adjustment for the x-axis unfortunately 
@@ -633,18 +628,21 @@ icd_descr <- read.csv(here("Data", "Raw", "D_ICD_DIAGNOSES.csv"))
 
 icd_cohort %>% count(ICD9_CODE) %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE)) %>% 
   merge(icd_descr, by="ICD9_CODE", all.x=T) %>% arrange(desc(n)) %>% ungroup() %>%  filter(row_number()<=15) %>% 
-  ggplot(aes(x=reorder(SHORT_TITLE, -n), y=n)) +
+  mutate(Prop = paste0(round(100*n / nrow(icd_cohort %>% distinct(SUBJECT_ID)), 1), '%')) %>% 
+  ggplot(aes(x=reorder(SHORT_TITLE, -n), y=n, label=Prop)) +
     geom_bar(stat="identity", fill="navyblue", alpha=0.65) +
     ggtitle("B", #"Frequency of the 15 Most Common Diagnoses"
             ) + 
     ylab("Frequency") + xlab("ICD-9 Code") + theme_minimal() +
-    theme(axis.text.x=element_text(angle=60, vjust=0.9, hjust=0.8), text=element_text(size=15))
+    theme(axis.text.x=element_text(angle=60, vjust=0.9, hjust=0.8), text=element_text(size=15)) +
+    # geom_text(vjust=1.2, color="white", size=3.31, hjust=0.45)
+    geom_text(vjust=-0.9, angle=15) + ylim(c(0, 19000))
 ```
 
 ![](Thesis_Cleaning_EDA_files/figure-html/freq_plots-2.png)<!-- -->
 
 ```r
-    # this is a really unfortunately x-axis, couldn't find a better angle or adjustment for the x-axis unfortunately 
+    # this is a really unfortunate x-axis, couldn't find a better angle or adjustment for the x-axis 
 ```
 
 
@@ -670,7 +668,7 @@ icd_cohort %>% filter(!is.na(ICD9_CODE) & ICD9_CODE %in% (
   corrplot::corrplot(type="upper", diag=F, order="hclust", method = "shade")
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-23-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-22-1.png)<!-- -->
 
 
 #### Correlation Matrix Among All Included ($1% \geq$ Prevalence) Codes
@@ -688,7 +686,7 @@ x[x>1] <- 1
 x %>% corrplot::corrplot(type="upper", diag=F, order = "hclust", method = "color", tl.pos = "n")
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-24-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-23-1.png)<!-- -->
 
 
 #### Most Correlated Diagnoses
@@ -721,7 +719,7 @@ top10_corr_plot %>% mutate(Pair = paste0(group1, ", ", group2)) %>%
   ylab("Correlation Coefficient") + xlab("ICD-9 Diagnosis Code Pair")
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-25-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-24-1.png)<!-- -->
   
   
   
@@ -742,7 +740,7 @@ icd_cohort %>%
       corrplot::corrplot(type="upper", diag=F, order="hclust", method = "shade")
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-26-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-25-1.png)<!-- -->
 
 
 
@@ -784,7 +782,7 @@ admit_pts %>% mutate(MortalityType=
   ggtitle("Frequency of In-Hospital Mortality Status") + theme_minimal() + theme(legend.position = "none") 
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-28-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-27-1.png)<!-- -->
 
 
 ##### Payment/Insurance
@@ -799,7 +797,7 @@ admit_pts %>% count(INSURANCE) %>% mutate(prop=paste0(round(n/nrow(admit_pts), 4
   ggtitle("Frequency of Insurance Status/Payment Method") + theme_minimal() + theme(legend.position = "none") 
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-29-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-28-1.png)<!-- -->
 
 With the two small groups of `Self Pay` and `Government`, I will contradict what I wrote earlier and collapse these categories. `Self Pay` will be collapsed into the `Private` category, and `Government` will be combined with `Medicaid` as `Medicaid/Non-Medicare Public Assistance`:
 
@@ -817,7 +815,7 @@ admit_pts %>%
   ggtitle("Frequency of Insurance Status/Payment Method") + theme_minimal() + theme(legend.position = "none") 
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-30-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-29-1.png)<!-- -->
 
 
 ##### General Hospital Length of Stay 
@@ -837,7 +835,7 @@ los_graph %>%   ggplot(aes(x=GenLOS)) + geom_density(fill="lightblue", alpha=0.4
                                                     round(var(los_graph$GenLOS),2), ", suggesting overdispersion of this variable."))
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-31-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-30-1.png)<!-- -->
 
 We unsurprisingly see a heavy skew in our length of stay data which is highly overdispersed (variance of 113 is more than ~13x greater than our mean of under 10 days).
  
@@ -857,7 +855,7 @@ admit_pts %>% filter(!is.na(Yr1Readmit)) %>% count(Yr1Readmit) %>% mutate(prop=p
   scale_x_discrete(label= c("No Readmission", "Readmitted")) + theme(legend.position = "none")
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-32-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-31-1.png)<!-- -->
 
 
 Not only can we look at the simple binary readmission status, we also have time to re-admission, which we previously visualized among all patients but can look at simply within our subset of patients who were readmitted within our single, calendar year of interest:
@@ -881,7 +879,7 @@ admit_pts %>% filter(Yr1Readmit==1) %>%
 ## Don't know how to automatically pick scale for object of type difftime. Defaulting to continuous.
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-33-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-32-1.png)<!-- -->
 
 
 ##### Age
@@ -906,7 +904,7 @@ admit_pts %>%
   ggtitle("Density Curve of Age")
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-34-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-33-1.png)<!-- -->
 
 
 ##### Gender
@@ -924,7 +922,7 @@ admit_pts %>% count(GENDER) %>% mutate(prop=paste0(100*round(n/nrow(admit_pts), 
   scale_fill_brewer(palette=2, type = "qual") + theme_minimal()
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-35-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-34-1.png)<!-- -->
 
 
 We have a fairly balanced data set with respect to gender, with men outnumbering women (which we would expect in a data set of critical care admissions).
@@ -953,10 +951,9 @@ write.csv(cohort_full,
           row.names = F)
 ```
 
-## Analyses
 
+## Appendixes 
 
-My lazy calling of packages and data, so that analysis does not require running all cleaning and EDA code above:
 
 
 ```r
@@ -964,17 +961,6 @@ require(magrittr) # Ceci n'est pas une %>%
 require(dplyr) # General data management, cleaning (admittedly I switch between Base R and tidyverse as I code, somewhat stream-of-consciousness ly)
 require(ggplot2) # Visualization
 require(comorbidity) # Used to easily generate Elixhauser comorbdity grouping/categorization [8/23/2020 Note: may be excluded if Elixhauser or Charlson not used]
-```
-
-```
-## Loading required package: comorbidity
-```
-
-```
-## Warning: package 'comorbidity' was built under R version 4.0.2
-```
-
-```r
 require(tidyr) # pivot functions for transposing data to/from long and wide
 require(icd) # used in validity check of diagnoses codes
 require(lubridate) # used in evaluating dates, most notably in date of death 
@@ -982,36 +968,267 @@ require(lares) # corr_cross function used to identify the top correlations withi
 require(corrplot) # used for visualizing correlation matrices 
 require(here) # Used for data-calls/ease of file path storage usage
 require(treelet) # for treelet modelling
-```
-
-```
-## Loading required package: treelet
-```
-
-```r
 require(ggdendro) # trying ggplot's dnedrogram extension
-```
 
-```
-## Loading required package: ggdendro
-```
-
-```
-## Warning: package 'ggdendro' was built under R version 4.0.2
-```
-
-```r
 if(!("cohort_full" %in% ls())) {
   cohort_full <-  read.csv(here("Data", "cohort_full.csv"))
 }
 ```
 
 
-### Precursor Dimension Reduction
+
+### Appendix A: Thesis Table & Figure Generation
+
+Redundant code from the main body of cleaning and EDA code, but I wanted to consolidate relevant table & figure genereation code. This is not an exhaustive list of tables & figures, including only those captured in the descriptive analyses (Results 3.1).
+
+#### Table 2A & 2B: Cohort Descriptives
+
+
+```r
+stat_sum <- function(data, var, stat, category=NULL) {
+  quovar <- deparse(substitute(var))
+  if(stat=="mean") output_txt <- paste0(mean(data[,quovar]) %>% round(2), " (", sd(data[,quovar]) %>% round(2), ")")
+  if(stat=="median") output_txt <- paste0(median(data[,quovar]) %>% round(2), " [", quantile(data[,quovar])[2] %>% round(2), "-", quantile(data[,quovar])[4] %>% round(2), "]")
+  if(stat=="proportion" | stat=="prop") {
+    if(is.null(category)) stop("When requesting proportion for categorical vaiablevariable, please specify ")
+    freq <- data[data[,quovar]==category & !is.na(data[,quovar]),] %>% nrow()
+    prop <- (100*(data[data[,quovar]==category & !is.na(data[,quovar]),] %>% nrow()) / nrow(data[!is.na(data[,quovar]),])) %>% round(2)
+    output_txt <- paste0(freq, " (", prop, "%)")
+  }
+  return(output_txt)
+}
+
+## 1A: Mortality & LOS Cohort (n=38,554)
+  # Calculating number of ICD-9-CM Diagnosis Codes per patient (Median [IQR]) before table
+    icd_quantiles <- icd_cohort %>% count(SUBJECT_ID) %>% pull(n) %>% quantile()
+    
+  # Generating the table in an easy copy/paste format
+    (sumtbl <- cohort_full %>% summarize(
+      # `Age, Mean (SD)` = paste0(round(mean(Age), 2), " (", round(sd(Age),2), ")"),
+      # `Sex (Male), n (%)` = paste0(sum(cohort_full$GENDER=="M"), " (", round(100*sum(cohort_full$GENDER=="M")/nrow(cohort_full), 2), "%)"),
+      # `Hospital Stay (days), Median (IQR)` = paste0(median(HospitalLOS), " [", quantile(HospitalLOS)[2], "-", quantile(HospitalLOS)[4], "]"),
+      `Age, Mean (SD)` = stat_sum(data=., var=Age, stat="mean"),
+      `Sex (Male), n (%)` = stat_sum(data=., var=GENDER, stat="prop", category = "M"),
+      `Hospital Stay (days), Median (IQR)` = stat_sum(., var=HospitalLOS, stat="median"),
+      `Re-Admission*, n (%)`= "",
+      `In-Hospital Mortality, n (%)` = stat_sum(., InHospMortality, "prop", 1),
+      `Number of ICD-9-CM Diagnosis Codes per Patient, Median (IQR)` = paste0(icd_quantiles[3], " [", icd_quantiles[2], "-", icd_quantiles[4], "]"),
+      `Primary Payment Method, n (%)` = "",
+      `Medicare` = stat_sum(., INSURANCE, "prop", "Medicare"),
+      `Private Insurance` = stat_sum(., INSURANCE, "prop", "Private"),
+      `Self-Pay` = stat_sum(., INSURANCE, "prop", "Self Pay"),
+      `Medicaid` = stat_sum(., INSURANCE, "prop", "Medicaid"),
+      `Other Public Assistance` = stat_sum(., INSURANCE, "prop", "Government")
+    )) 
+```
+
+```
+##   Age, Mean (SD) Sex (Male), n (%) Hospital Stay (days), Median (IQR)
+## 1  63.51 (17.55)     21820 (56.6%)                           7 [4-12]
+##   Re-Admission*, n (%) In-Hospital Mortality, n (%)
+## 1                                     5586 (14.49%)
+##   Number of ICD-9-CM Diagnosis Codes per Patient, Median (IQR)
+## 1                                                      7 [5-9]
+##   Primary Payment Method, n (%)    Medicare Private Insurance    Self-Pay
+## 1                               20433 (53%)    13243 (34.35%) 546 (1.42%)
+##       Medicaid Other Public Assistance
+## 1 3169 (8.22%)            1163 (3.02%)
+```
+
+```r
+    data.frame(colnames(sumtbl),
+               t(sumtbl[1,]),
+               row.names = NULL) %>% write.table("clipboard")
+    
+
+
+## 1B: Reamdission Cohort (n=28,893)
+    readmit_cohort <- cohort_full %>% filter(!is.na(Yr1Readmit))
+    
+    readmit_icds <- icd_cohort %>% filter(SUBJECT_ID %in% (readmit_cohort %>% pull(SUBJECT_ID)))
+    readmit_quantiles <- readmit_icds %>% count(SUBJECT_ID) %>% pull(n) %>% quantile()
+ 
+       
+    (sumtbl_readmit <- readmit_cohort %>% summarize(
+      # `Age, Mean (SD)` = paste0(round(mean(Age), 2), " (", round(sd(Age),2), ")"),
+      # `Sex (Male), n (%)` = paste0(sum(cohort_full$GENDER=="M"), " (", round(100*sum(cohort_full$GENDER=="M")/nrow(cohort_full), 2), "%)"),
+      # `Hospital Stay (days), Median (IQR)` = paste0(median(HospitalLOS), " [", quantile(HospitalLOS)[2], "-", quantile(HospitalLOS)[4], "]"),
+      `Age, Mean (SD)` = stat_sum(data=., var=Age, stat="mean"),
+      `Sex (Male), n (%)` = stat_sum(data=., var=GENDER, stat="prop", category = "M"),
+      `Hospital Stay (days), Median (IQR)` = stat_sum(., var=HospitalLOS, stat="median"),
+      `Re-Admission*, n (%)`= stat_sum(., Yr1Readmit, "prop", 1),
+      `In-Hospital Mortality, n (%)` = stat_sum(., InHospMortality, "prop", 1),
+      `Number of ICD-9-CM Diagnosis Codes per Patient, Median (IQR)` = paste0(readmit_quantiles[3], " [", readmit_quantiles[2], "-", readmit_quantiles[4], "]"),
+      `Primary Payment Method, n (%)` = "",
+      `Medicare` = stat_sum(., INSURANCE, "prop", "Medicare"),
+      `Private Insurance` = stat_sum(., INSURANCE, "prop", "Private"),
+      `Self-Pay` = stat_sum(., INSURANCE, "prop", "Self Pay"),
+      `Medicaid` = stat_sum(., INSURANCE, "prop", "Medicaid"),
+      `Other Public Assistance` = stat_sum(., INSURANCE, "prop", "Government")
+    )) 
+```
+
+```
+##   Age, Mean (SD) Sex (Male), n (%) Hospital Stay (days), Median (IQR)
+## 1  60.92 (17.58)    16663 (57.67%)                           7 [4-11]
+##   Re-Admission*, n (%) In-Hospital Mortality, n (%)
+## 1         2153 (7.45%)                       0 (0%)
+##   Number of ICD-9-CM Diagnosis Codes per Patient, Median (IQR)
+## 1                                                      6 [4-9]
+##   Primary Payment Method, n (%)       Medicare Private Insurance    Self-Pay
+## 1                               13633 (47.18%)    11209 (38.79%) 440 (1.52%)
+##       Medicaid Other Public Assistance
+## 1 2584 (8.94%)            1027 (3.55%)
+```
+
+```r
+# All results combined    
+data.frame(colnames(sumtbl),
+       t(sumtbl[1,]),
+       t(sumtbl_readmit[1,]),
+       row.names = NULL) %>% write.table("clipboard")
+```
+
+
+
+#### Figure 1A & 1B: Diagnosis Code Frequency
+
+```r
+icd_cohort %>% count(ICD9_CODE)  %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE)) %>%
+  ggplot(aes(x=reorder(ICD9_CODE, -n), y=n)) +
+    geom_bar(stat="identity", fill="navyblue", alpha=0.65) +
+    ggtitle("A", #"Frequency Plot of All Diagnoses Codes", 
+          # subtitle = paste("(Including only codes with 1% prevalence or greater)\nn=", nrow(icd_cohort %>% count(ICD9_CODE)), 
+          #                  " unique diagnoses, among", 
+          #                  nrow(admit_pts), "patients")
+          ) + 
+    ylab("Frequency") + xlab("Distinct (Unlabelled) ICD-9 Codes") + theme_minimal() +
+    theme(axis.text.x=element_blank(), text=element_text(size=15))
+```
+
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-38-1.png)<!-- -->
+
+```r
+icd_descr <- read.csv(here("Data", "Raw", "D_ICD_DIAGNOSES.csv"))
+
+icd_cohort %>% count(ICD9_CODE) %>% arrange(desc(n)) %>% filter(!is.na(ICD9_CODE)) %>% 
+  merge(icd_descr, by="ICD9_CODE", all.x=T) %>% arrange(desc(n)) %>% ungroup() %>%  filter(row_number()<=15) %>% 
+  mutate(Prop = paste0(round(100*n / nrow(icd_cohort %>% distinct(SUBJECT_ID)), 1), '%')) %>% 
+  ggplot(aes(x=reorder(SHORT_TITLE, -n), y=n, label=Prop)) +
+    geom_bar(stat="identity", fill="navyblue", alpha=0.65) +
+    ggtitle("B", #"Frequency of the 15 Most Common Diagnoses"
+            ) + 
+    ylab("Frequency") + xlab("ICD-9 Code") + theme_minimal() +
+    theme(axis.text.x=element_text(angle=60, vjust=0.9, hjust=0.8), text=element_text(size=15)) +
+    # geom_text(vjust=1.2, color="white", size=3.31, hjust=0.45)
+    geom_text(vjust=-0.9, angle=15) + ylim(c(0, 19000))
+```
+
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-38-2.png)<!-- -->
+
+```r
+    # this is a really unfortunate x-axis, couldn't find a better angle or adjustment for the x-axis 
+```
+
+#### Figure 3: Correlation Matrix
+
+```r
+cormat <- (icd_cohort %>% 
+  mutate(values=1) %>% 
+  pivot_wider(id_cols="SUBJECT_ID", names_from="ICD9_CODE", values_from="values") %>% 
+  mutate_all(function(x) ifelse(is.na(x), 0, x))  %>% 
+  select(-SUBJECT_ID) %>% 
+  cor())
+
+cormat %>% corrplot::corrplot(type="upper", diag=F, order = "hclust", col = colorRampPalette(c("red","white", "blue"))(10), method = "color", tl.pos = "n")
+```
+
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-39-1.png)<!-- -->
+
+
+#### Figure 4: Highest Correlation Bar Graph
+
+```r
+top10_corr_plot <- icd_cohort %>% 
+  filter(!is.na(ICD9_CODE)) %>% 
+  mutate(values=1) %>% 
+  pivot_wider(id_cols="SUBJECT_ID", names_from="ICD9_CODE", values_from="values") %>% 
+  mutate_all(function(x) ifelse(is.na(x), 0, 1)) %>% 
+  select(-SUBJECT_ID) %>% 
+  corr_cross(top=10, plot=F)
+```
+
+```
+## Returning only the top 10. You may override with the `top` parameter
+```
+
+```r
+barplot <- top10_corr_plot %>% mutate(Pair = paste0(group1, ", ", group2)) %>% 
+  ggplot(aes(x=reorder(Pair, corr), y=round(corr, 2))) +
+  geom_bar(stat='identity', fill="black", alpha=0.6) + 
+  geom_text(aes(y =round(corr, 2)-0.04, label=round(corr, 2)),
+            color="white", alpha=0.75) + 
+  coord_flip() + theme_minimal() +
+  theme(text=element_text(size=13.5)) +
+  ylab("Correlation Coefficient") + xlab("ICD-9 Diagnosis Code Pair")
+
+require(gridExtra)
+```
+
+```
+## Loading required package: gridExtra
+```
+
+```
+## 
+## Attaching package: 'gridExtra'
+```
+
+```
+## The following object is masked from 'package:dplyr':
+## 
+##     combine
+```
+
+```r
+require(grid)
+```
+
+```
+## Loading required package: grid
+```
+
+```r
+corrtbl <- c(top10_corr_plot %>% pull(group1) %>% unique(),
+             t(t(top10_corr_plot %>% pull(group2) %>% unique()))) %>% unique() %>% data.frame(ICD9_CODE=.) %>%
+  merge(icd_descr %>% select(ICD9_CODE, SHORT_TITLE), by="ICD9_CODE", all.x=T) %>% arrange(ICD9_CODE) %>% 
+  mutate(SHORT_TITLE = case_when(is.na(SHORT_TITLE) ~ "Digestive system complications NOS",
+                                 ICD9_CODE=="25060" ~  "Diabetes (II) with neurological manifestations", 
+                                 ICD9_CODE=="29410" ~  "Dementia without behavioral disturbance",
+                                 ICD9_CODE=="40390" ~  "Hypertensive chronic kidney disease, stage I-IV",
+                                 ICD9_CODE=="40391" ~  "Hypertensive chronic kidney disease, stage V+",
+                                 ICD9_CODE=="5859" ~  "Chronic kidney disease NOS",
+                                 TRUE ~ SHORT_TITLE)) %>% select(`ICD-9-CM Code`=ICD9_CODE, `Description`=SHORT_TITLE) %>% tableGrob(rows = NULL)
+
+
+grid.arrange(barplot,
+             corrtbl,
+             nrow=1,
+             as.table=T)
+```
+
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-40-1.png)<!-- -->
+
+
+### Appendix B: Unused Exporatory Analyses
+
+My lazy calling of packages and data, so that analysis does not require running all cleaning and EDA code above:
+
+#### Precursor Dimension Reduction
 
 Prior to the treelet cross-validation process, Dr. Carlson suggested fitting PCA to evaluate a possible range of values for the $K$ number of clusters parameter to fit in the treelet cross-validation process. I thought it may be interesting to similarly do some (similarly preliminary) agglomerative hierarchical clustering to the data. 
 
-### PCA Precursor 
+#### PCA Precursor 
 
 
 ```r
@@ -1028,7 +1245,7 @@ icd_pca_df %>% ggplot(aes(x=PC, y=PropVar)) +
   ggtitle("Proportion of Variance Explained by Individual Principal Component")
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-38-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-41-1.png)<!-- -->
 
 ```r
 icd_pca_df %>% ggplot(aes(x=PC, y=CmltvPropVar)) +
@@ -1037,12 +1254,12 @@ icd_pca_df %>% ggplot(aes(x=PC, y=CmltvPropVar)) +
   ggtitle("Cumulative Proportion of Variance Explained by Principal Component")
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-38-2.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-41-2.png)<!-- -->
 
 
 
 
-### Preliminary Treelet
+#### Preliminary Treelet
 
 
 Full dendrogram of our treelet, not particularly useful/insightful but thanfully it is simple and quick to fit our treelet, retaining results for all levels
@@ -1060,7 +1277,7 @@ tt_results <- treelet::Run_JTree(icd_cor, nrow(icd_cor)-1, 1:nrow(icd_cor)-1)
 ```
 
 
-### Treelet Identification
+#### Treelet Identification
 
 
 
@@ -1677,7 +1894,7 @@ tt_results %>% str()
 
 
 
-#### Treelet Vizualization 
+##### Dendrogram Vizualization 
 
 ```r
 # Converting the covariance matrix --> correlation matrix --> distance matrix
@@ -1707,7 +1924,7 @@ dist_mat <- as.dist(
     ggtitle("Example Dendrogram of All Data", subtitle = "Maximum Cut-Off Chosen Arbitrarily\nVisual and results incomplete, only included demonstratively")
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-41-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-44-1.png)<!-- -->
 
 
 The above visualization is impossible to decipher, but (again solely for current presentation and familiaring myself with the treelet function's output structure), we can visualize the treelet for only the first 20 conjoinings/clusterings:
@@ -1755,7 +1972,7 @@ ggplot() +
         panel.background=element_rect(fill="white"))
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-42-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-45-1.png)<!-- -->
 
 
 
@@ -1804,7 +2021,7 @@ dist_mat <- as.dist(
     ggtitle("Example Dendrogram of All Data", subtitle = "Maximum Cut-Off Chosen Arbitrarily\nVisual and results incomplete, only included demonstratively")
 ```
 
-![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-43-1.png)<!-- -->
+![](Thesis_Cleaning_EDA_files/figure-html/unnamed-chunk-46-1.png)<!-- -->
 
 
 

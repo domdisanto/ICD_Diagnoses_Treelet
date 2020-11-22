@@ -19,7 +19,6 @@ output:
 library(magrittr) # Ceci n'est pas une %>%, loaded via dplyr also but liked to include for transparency 
 library(dplyr) # General data management, cleaning (admittedly I switch between Base R and tidyverse as I code, somewhat stream-of-consciousness ly)
 library(ggplot2) # Visualization
-library(comorbidity) # Used to easily generate Elixhauser comorbdity grouping/categorization [8/23/2020 Note: may be excluded if Elixhauser or Charlson not used]
 library(tidyr) # pivot functions for transposing data to/from long and wide
 library(icd) # used in validity check of diagnoses codes
 library(lubridate) # used in evaluating dates, most notably in date of death 
@@ -30,6 +29,7 @@ library(treelet) # Used for treelet analysis
 library(ggdendro) # Used for dendrogram visualization of Treelet analysis
 library(gghighlight) # Used in cross-validation visualizations
 library(MASS) # Used for glm.nb negative binomial regression function 
+require(stringr) # Some regex matching for filtering in the visualiation of p-values & coefficients from GLM's 
 
 select <- dplyr::select # Masking the MASS select function, somethign to do with ridge regression I think, in favor of dplyr's `select()` function for wrangling
 
@@ -47,14 +47,18 @@ here()
 cohort_full <-  read.csv(here("Data", "cohort_full.csv"))
 colnames(cohort_full) <- cohort_full %>% colnames() %>% gsub(pattern = "X", "", x = .)
 # cohort_full %>% head()
+
+diagnosis_labs <- read.csv(here("Data", "Raw", "D_ICD_DIAGNOSES.csv"))
 ```
 
 
 
 ## Treelet Cross-Validation Function
 
-Defining the function that fits the treelet, and retains the output of interest to identify the optimal K in my cross-validation code
-
+Defining the function that fits the treelet, and retains the characteristics of:  
+- The "best K-basis" or the optimal L|K parameter for each K   
+- The retained K features for each given K   
+- All p-1 basis matrices from the fit treelet   
 
 
 ```{r}
@@ -135,6 +139,15 @@ cv_data$fold <- sample(c(rep(1, ceiling(nrow(cv_data)/5)),
                        )
 
 table(cv_data$fold)
+cat("\n")
+cat("Printing frequency of \"Self-Pay\" insurane category across CV folds...\n")
+count <- cv_data %>% filter(INSURANCE=="Self Pay") %>% count()
+cat(paste0("Full analytic data (n=", nrow(cv_data), "): " ,  count, " (", round(100*count/nrow(cv_data), 2) ,"%)\n"))
+
+for(i in 1:max(cv_data$fold)){
+  count <- cv_data %>% filter(fold==i) %>% filter(INSURANCE=="Self Pay") %>% count()
+  cat(paste0("Fold ", i, ": ", count, " (", round(100*count/nrow(cv_data %>% filter(fold==i)), 2) ,"%)\n"))
+}
 ```
 
 ### Hospital Readmission 
@@ -166,6 +179,15 @@ cv_data_readmit$fold <- sample(c(rep(1, ceiling(nrow(cv_data_readmit)/5)),
 
 table(cv_data_readmit$fold)
 
+cat("\n")
+cat("Printing frequency of \"Self-Pay\" insurane category across CV folds...\n")
+count <- cv_data_readmit %>% filter(INSURANCE=="Self Pay") %>% count()
+cat(paste0("Full analytic data (n=", nrow(cv_data_readmit), "): " ,  count, " (", round(100*count/nrow(cv_data_readmit), 2) ,"%)\n"))
+
+for(i in 1:max(cv_data_readmit$fold)){
+  count <- cv_data_readmit %>% filter(fold==i) %>% filter(INSURANCE=="Self Pay") %>% count()
+  cat(paste0("Fold ", i, ": ", count, " (", round(100*count/nrow(cv_data_readmit %>% filter(fold==i)), 2) ,"%)\n"))
+}
 ```
 
 
@@ -180,6 +202,10 @@ For each of our outcomes, similar processes are followed, which include:
      c) Assess test fit (Briers & AUC for mortality, readmission; MSE for length of stay)   
      d) Export a data frame that contains test error for each K parameter and fold, and the average test Brier Score and AUC (so 177 observations (for 1 to p-1 values of K), and 13 columns, a K value, test-fold specific Brier Score and AUC values, and the two averages)
 
+
+*A procedural note, the three outcome specific processes below include the same `brier`, `auc`, and `performance_df` named objects, so that each chunk writes over the results of the previous, but each chunk exports the results in its final step.*  
+  
+  
 ### In-Hospital Mortality
 
 
@@ -436,7 +462,7 @@ ggplot(mortality_performance, aes(x=K, y=BS_TestAvg, color = as.factor(ParamFlag
 
 ```{r}
 # Subsetting the highlighted K parameters above
-  mortality_performance[!is.na(mortality_performance$ParamFlag),]
+  mortality_performance[!is.na(mortality_performance$ParamFlag),] 
 
 # Refitting the treelet process in our training data to pull optimal L's for our highlighted K's
   cv_xmat <- cv_data  %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
@@ -476,13 +502,19 @@ ggplot(mortality_performance, aes(x=K, y=BS_TestAvg, color = as.factor(ParamFlag
                                                                                  TRUE ~ NA_character_)) %>% select(Feature, Code=V1, Loading=V2))
   }
   
+  
   write.csv(loading_mat_mortality,
             here("Results/LoadingMatrix_Mortality.csv"))
   
-  write.csv(reformat_loadingmat,
+  # Pulling in labels for the full matrix
+  reformat_loadingmat_labs <- reformat_loadingmat %>% mutate(Order=row_number()) %>%  
+    merge(diagnosis_labs %>% select(ICD9_CODE, SHORT_TITLE), by.x="Code", by.y="ICD9_CODE", all.x=T) %>% arrange(Order) %>% select(-Order)
+  
+  write.csv(reformat_loadingmat_labs,
             here("Results/LoadingMatrix_Mortality_Redux.csv"), na = "")
   
 
+  
 ```
 
 
@@ -512,8 +544,42 @@ phat <- predict(object = train_glm, newdata = test_predictors, type="response")
       
 brier_test <- sum((phat - test_predictors$InHospMortality)^2) / nrow(holdout_test)
 auc_test <- pROC::roc(test_predictors$InHospMortality, phat)$auc
-        
+
+# Exporting full model estimates 
+ci95s <- confint.default(train_glm) # Using Wald approximation for confidence intervals, profile likelihood using confint() from MASS takes minutes to run (when it isn't crashing my R session) 
+
+cbind(train_glm %>% summary() %>% .$coefficients %>% as.data.frame() %>% select(Estimate) %>% round(2),
+      CI=paste0("[", (ci95s %>% round(2))[,1], ", ", (ci95s %>% round(2))[,2], "]"),
+      train_glm %>% summary() %>% .$coefficients %>% as.data.frame() %>% select(`Pr(>|z|)`) %>% round(4)) %>% write.table("clipboard")
 ```
+
+##### Graphing P-values/Coefficients
+
+```{r}
+# Height = -log(PValue); Color=Coefficient
+train_glm %>% summary() %>% .$coefficients %>% as.data.frame() %>% mutate(Covariate=rownames(.), Order=row_number()) %>% select(PValue=`Pr(>|z|)`, everything()) %>% 
+  filter(stringr::str_detect(Covariate, "[0-9]")) %>% arrange(desc(Estimate)) %>% mutate(Label = case_when(row_number()<=5 ~ str_replace_all(Covariate, "`", ""),
+                                                                                                           TRUE ~ "")) %>% arrange(Order) %>%
+  ggplot(aes(x=reorder(Covariate, Order), y=-log(PValue), fill=Estimate)) +
+    geom_bar(stat="identity") + theme_minimal() +
+  geom_text(aes(label=Label, group=Label),
+            hjust=-0.45, vjust=0.95) +
+  theme(axis.text.x = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.title.x = element_text(size=16),
+        axis.title.y = element_text(size=16),
+        legend.title = element_text(size=12.4),
+        legend.text =  element_text(size=10),
+        legend.position = c(0.9, 0.65)) + 
+  labs(caption="Inset text notes feature numbers of five highest coefficients") +
+  xlab ("Treelet Feature") + ylab("-log(P-Value)") +
+  scale_fill_continuous(type="viridis", name="Coefficient") 
+
+```
+
 
 ##### Graphing Phat Distributions
 
@@ -651,12 +717,15 @@ tt_fnc_readmit$optimal_params[c(readmit_performance [!is.na(readmit_performance 
                                                                                  TRUE ~ NA_character_)) %>% select(Feature, Code=V1, Loading=V2))
   }
   
-  length(unique(reformat_loadingmat_readmit$Code))
+  
+  reformat_loadingmat_readmit_labs <- reformat_loadingmat_readmit %>% mutate(Order=row_number()) %>%  
+    merge(diagnosis_labs %>% select(ICD9_CODE, SHORT_TITLE), by.x="Code", by.y="ICD9_CODE", all.x=T) %>% arrange(Order) %>% select(-Order)
+  
   
   write.csv(loading_mat_readmit,
             here("Results/LoadingMatrix_Readmit.csv"))
   
-  write.csv(reformat_loadingmat_readmit,
+  write.csv(reformat_loadingmat_readmit_labs,
             here("Results/LoadingMatrix_Readmit_Redux.csv"), na = "")
   
 
@@ -690,7 +759,40 @@ brier_test <- sum((phat_readmit - test_predictors_readmit$Yr1Readmit)^2) / nrow(
 auc_test <- pROC::roc(test_predictors_readmit$Yr1Readmit, phat_readmit)$auc
 brier_test
 auc_test
+
+# Exporting full model estimates 
+ci95s_readmit <- confint.default(train_glm_readmit) # Using Wald approximation for confidence intervals, profile likelihood using confint() from MASS takes minutes to run (when it isn't crashing my R session) 
+
+cbind(train_glm_readmit %>% summary() %>% .$coefficients %>% as.data.frame() %>% select(Estimate) %>% round(2),
+      CI=paste0("[", (ci95s_readmit %>% round(2))[,1], ", ", (ci95s_readmit %>% round(2))[,2], "]"),
+      train_glm_readmit %>% summary() %>% .$coefficients %>% as.data.frame() %>% select(`Pr(>|z|)`) %>% round(4)) %>% write.table("clipboard")
 ```
+
+##### Graphing P-values/Coefficients
+```{r}
+train_glm_readmit %>% summary() %>% .$coefficients %>% as.data.frame() %>% mutate(Covariate=rownames(.), Order=row_number()) %>% select(PValue=`Pr(>|z|)`, everything()) %>% 
+  filter(stringr::str_detect(Covariate, "[0-9]")) %>% arrange(desc(Estimate)) %>% mutate(Label = case_when(row_number()<=5 ~ str_replace_all(Covariate, "`", ""),
+                                                                                                           TRUE ~ "")) %>% arrange(Order) %>%
+  ggplot(aes(x=reorder(Covariate, Order), y=-log(PValue), fill=Estimate)) +
+    geom_bar(stat="identity") + theme_minimal() +
+  geom_text(aes(label=Label, group=Label),
+            hjust=-0.9, vjust=0.95) +
+  theme(axis.text.x = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.title.x = element_text(size=16),
+        axis.title.y = element_text(size=16),
+        legend.title = element_text(size=12.4),
+        legend.text =  element_text(size=10),
+        legend.position = c(0.9, 0.65)) + 
+  labs(caption="Inset text notes feature numbers of five highest coefficients") +
+  xlab ("Treelet Feature") + ylab("-log(P-Value)") +
+  scale_fill_continuous(type="viridis", name="Coefficient") 
+
+```
+
 
 ##### Graphing Phat Distributions
 
@@ -821,12 +923,15 @@ tt_fnc_los$retained_fts[[46]]
                                                                                  TRUE ~ NA_character_)) %>% select(Feature, Code=V1, Loading=V2))
   }
   
+  reformat_loadingmat_los_labs <- reformat_loadingmat_los %>% mutate(Order=row_number()) %>%  
+    merge(diagnosis_labs %>% select(ICD9_CODE, SHORT_TITLE), by.x="Code", by.y="ICD9_CODE", all.x=T) %>% arrange(Order) %>% select(-Order)
+  
   length(unique(reformat_loadingmat_los$Code))
   
   write.csv(loading_mat_los,
             here("Results/LoadingMatrix_LOS.csv"))
   
-  write.csv(reformat_loadingmat_los,
+  write.csv(reformat_loadingmat_los_labs,
             here("Results/LoadingMatrix_LOS_Redux.csv"), na = "")
   
 
@@ -836,12 +941,23 @@ tt_fnc_los$retained_fts[[46]]
 
 #### Building Final Model and Assessting Test Fit
 
-Using 1-Standard Deviation Parameter, building the logistic regression model on our the 80% cross-validation subset 
+First fitting the Poisson model to assess overdispersion using the resulting deviance and $\chi^2$ distribution.
+
+```{r}
+poisson_los <- glm(HospitalLOS ~ . , data=cv_predictors, family="poisson")
+poisson_los$deviance / poisson_los$df.residual # Values near 1 indicate evenly dispersed data (mean ~= variance), our value of 5.78 indicates overdispersion (variance ~=5.8*mean)
+
+pchisq(poisson_los$deviance, df=poisson_los$df.residual, lower.tail = F)
+  # Unsurprisingly significant
+
+```
+
+Now fitting the negative binomial model, again using the 1-Standard Deviation Parameter, on our the 80% cross-validation subset 
 
 ```{r}
 final_basis <- tt_fnc_los$basis_mats[[63]][,tt_fnc_los$retained_fts[[46]]]
 
-cv_xmat_transform <- cv_xmat %*% final_basis
+cv_xmat_transform <- cv_los_xmat %*% final_basis
 
 cv_predictors <- cv_data %>% select(GENDER, Age, INSURANCE, HospitalLOS) %>% cbind(., cv_xmat_transform) %>% as.data.frame()
 
@@ -849,15 +965,103 @@ dim(cv_predictors)
 
 train_glm_los <- glm.nb(HospitalLOS ~ . , data=cv_predictors)
 train_glm_los %>% summary()
-confint(train_glm_los, parm = 1:7)
+train_glm_los %>% str()
+
+# confint(train_glm_los, parm = 1:7)
 
 test_xmat <- holdout_test  %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
 test_xmat_transform <- test_xmat %*% final_basis
 test_predictors <- holdout_test %>% select(GENDER, Age, INSURANCE, HospitalLOS) %>% cbind(., test_xmat_transform) %>% as.data.frame()
 
 yhat <- predict(object = train_glm_los, newdata = test_predictors, type="response") 
-      
-MSE <- sum((yhat - test_predictors$HospitalLOS)^2) / nrow(holdout_test)
+
+(MSE <- sum((yhat - test_predictors$HospitalLOS)^2) / nrow(holdout_test)) %>% sqrt()
+
+# Exporting full model estimates 
+ci95s_los <- confint.default(train_glm_los) # Using Wald approximation for confidence intervals, profile likelihood using confint() from MASS takes minutes to run (when it isn't crashing my R session) 
+
+cbind(train_glm_los %>% summary() %>% .$coefficients %>% as.data.frame() %>% select(Estimate) %>% round(2),
+      CI=paste0("[", (ci95s_los %>% round(2))[,1], ", ", (ci95s_los %>% round(2))[,2], "]"),
+      train_glm_los %>% summary() %>% .$coefficients %>% as.data.frame() %>% select(`Pr(>|z|)`) %>% round(4)) %>% write.table("clipboard")
+```
+
+
+##### Graphing P-Value/Coefficients
+```{r}
+train_glm_los %>% summary() %>% .$coefficients %>% as.data.frame() %>% mutate(Covariate=rownames(.), Order=row_number()) %>% select(PValue=`Pr(>|z|)`, everything()) %>% 
+  filter(stringr::str_detect(Covariate, "[0-9]")) %>% arrange(desc(Estimate)) %>% mutate(Label = case_when(row_number()<=5 ~ str_replace_all(Covariate, "`", ""),
+                                                                                                           TRUE ~ "")) %>% arrange(Order) %>%
+  ggplot(aes(x=reorder(Covariate, Order), y=-log(PValue), fill=Estimate)) +
+    geom_bar(stat="identity") + theme_minimal() +
+  geom_text(aes(label=Label, group=Label),
+            hjust=-0.35, vjust=0.95) +
+  theme(axis.text.x = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.title.x = element_text(size=16),
+        axis.title.y = element_text(size=16),
+        legend.title = element_text(size=12.4),
+        legend.text =  element_text(size=10),
+        legend.position = c(0.9, 0.65)) + 
+  labs(caption="Inset text notes feature numbers of five highest coefficients") +
+  xlab ("Treelet Feature") + ylab("-log(P-Value)") +
+  scale_fill_continuous(type="viridis", name="Coefficient") 
+```
+
+##### LOS Density Curve
+```{r}
+# Total Cohort
+cohort_full %>% ggplot(aes(x=HospitalLOS)) +
+  geom_density(lwd=1.3) + theme_minimal() + 
+  xlab("Length of Stay (Days)") + ylab("Density") +
+  xlim(c(0, 150)) +
+  geom_text(label="Figure truncated at x=150 for legibility.\n n=12 patients with values >150 days not included in this visual", x=100, y=0.015) +
+  NULL
+
+(cohort_full %>% arrange(desc(HospitalLOS)) %>% filter(HospitalLOS>=150) %>% pull(HospitalLOS)) %>% length()
+
+mean(cohort_full$HospitalLOS)
+sd(cohort_full$HospitalLOS)
+
+# # CV Training Cohort
+# cv_data %>% ggplot(aes(x=HospitalLOS)) +
+#   geom_density() + theme_minimal()
+# 
+# mean(cv_data$HospitalLOS)
+# sd(cv_data$HospitalLOS)
+
+```
+
+
+##### Diagnositics
+
+```{r}
+# Poisson
+los_poisson <- glm(HospitalLOS ~ ., data=cv_predictors, family="poisson")
+los_poisson %>% summary()
+
+# Negative Binomial # using cv_predictors, the resulting `los_nb` object is the same as the training glm fit earlier, simply renamed not to overwrite that object 
+los_nb <- glm.nb(HospitalLOS ~ . , data=cv_predictors)
+los_nb %>% summary()
+
+
+1/train_glm_los$theta
+
+llik_diff <- -2*(logLik(los_poisson) - logLik(los_nb))
+
+pchisq(llik_diff, df=1, lower.tail = F)
+
+summary(cohort_full$HospitalLOS)
+
+pois_nb_comp <- data.frame(PoissonYhat = predict(object=los_poisson, newdata=test_predictors),
+                           NegBinYhat = predict(object=los_nb, newdata=test_predictors))
+
+pois_nb_comp %>% ggplot(aes(x=NegBinYhat, y=PoissonYhat)) +
+  geom_point() + theme_minimal() + xlab("Negative Binomial Predictions") +
+  ylab("Poisson Predictions")
+
 ```
 
 ##### Scatterplot of Observed vs Predictive
@@ -894,6 +1098,31 @@ yhat_df %>% ggplot(aes(x=ObservedLOS, y=PredictedLOS, color=as.factor(PredictedL
   NULL 
 
 ```
+
+##### Residuals and Number of Diagnoses
+
+```{r}
+num_diagnoses_df <- cbind(yhat_df,
+                          NumDiagnoses = holdout_test %>% select(matches("^[0-9]")) %>% rowSums()) %>% 
+                    mutate(Resid=PredictedLOS-ObservedLOS,
+                           absResid = abs(PredictedLOS-ObservedLOS))
+
+num_diagnoses_df %>% ggplot(aes(group=NumDiagnoses, y=Resid)) +
+  geom_boxplot() + theme_minimal() + xlab("Number of ICD Diagnoses per Patient") +
+  ylab("Predicted LOS - Observed LOS")
+
+num_diagnoses_df %>% ggplot(aes(x=NumDiagnoses, y=absResid)) +
+  geom_point() + theme_minimal() + xlab("Number of ICD Diagnoses per Patient") +
+  ylab("|Predicted LOS - Observed LOS|")
+
+num_diagnoses_df %>% ggplot(aes(x=ObservedLOS, y=Resid)) +
+  geom_point() + theme_minimal() + xlab("Observed Length of Stay") +
+  ylab("Predicted LOS - Observed LOS")
+
+```
+
+
+
 
 ##### Distribution of Observed and Predicted LOS Values
 
@@ -981,13 +1210,13 @@ lasso_mortality <-  train(as.factor(InHospMortality) ~ .,
                    trControl=cv5)
 
 
-lasso_mortality$finalModel %>% str()
-
 phat_lasso <- predict(object = lasso_mortality, newdata = holdout_test, type="prob")
 
-lasso_mortality$finalModel
+((lasso_mortality$finalModel %>% coef(lasso_mortality$bestTune$lambda))[,1]!=0) %>% sum()
+(lasso_mortality$finalModel %>% coef(lasso_mortality$bestTune$lambda))[,1] %>% .[.==0]
+  # Uses 176 of 184 covariates (excludes 250.00, 780.39, 274.9, 714.0, 585.9, 441.2, 491.21, 785.0, and Private Insurance)
 
-pROC::roc(holdout_test$InHospMortality, phat_lasso[,1])
+(lasso_auc_mortality <- pROC::auc(holdout_test$InHospMortality, phat_lasso[,1]) %>% round(4))
 
 ```
 
@@ -1002,19 +1231,21 @@ pca_results <- prcomp(cv_data %>% select(matches("^[0-9]")), center = T, scale. 
                      CmltvPropVar = cumsum(PropVar)))
 
 
-# pca_mortality_df %>% ggplot(aes(x=PC, y=PropVar)) +
-#   geom_point(size=5, alpha=0.4) + geom_line(lwd=0.75) + theme_minimal() +
-#   ylab("Proportion of Variance Explained") + xlab("Principal Component") +
-#   ggtitle("Proportion of Variance Explained by Individual Principal Component")
-# 
-# 
-# pca_mortality_df %>% ggplot(aes(x=PC, y=CmltvPropVar)) +
-#   geom_point(size=5, alpha=0.4) + geom_line(lwd=0.75) + theme_minimal() +
-#   ylab("Cumulative Proportion of Variance Explained") + xlab("Principal Component") +
-#   ggtitle("Cumulative Proportion of Variance Explained by Principal Component")
+pca_mortality_df %>% ggplot(aes(x=PC, y=PropVar)) +
+  geom_point(size=5, alpha=0.4) + geom_line(lwd=0.75) + theme_minimal() +
+  ylab("Proportion of Variance Explained") + xlab("Principal Component") +
+  ggtitle("Proportion of Variance Explained by Individual Principal Component")
 
 
-rotate_icd <- (cv_data %>% select(matches("^[0-9]")) %>% as.matrix())  %*%  pca_results$rotation[,1:75]
+pca_mortality_df %>% ggplot(aes(x=PC, y=CmltvPropVar)) +
+  geom_point(size=5, alpha=0.4) + geom_line(lwd=0.75) + theme_minimal() +
+  ylab("Cumulative Proportion of Variance Explained") + xlab("Principal Component") +
+  ggtitle("Cumulative Proportion of Variance Explained by Principal Component")
+
+
+n_retain <- 50
+
+rotate_icd <- (cv_data %>% select(matches("^[0-9]")) %>% as.matrix())  %*%  pca_results$rotation[,1:n_retain]
 
 
 pca_glm <- glm(InHospMortality ~ . ,
@@ -1022,26 +1253,199 @@ pca_glm <- glm(InHospMortality ~ . ,
                family="binomial")   
 
 
-test_rotate <- (holdout_test %>% select(matches("^[0-9]")) %>% as.matrix())  %*%  pca_results$rotation[,1:75]
+test_rotate <- (holdout_test %>% select(matches("^[0-9]")) %>% as.matrix())  %*%  pca_results$rotation[,1:n_retain]
   
   
 test_pcadf <- holdout_test %>% select(InHospMortality, Age, GENDER, INSURANCE) %>% cbind(., test_rotate)
 
 test_pca_phat <- predict(newdata = test_pcadf, object=pca_glm, type="response")
 
-pROC::roc(predict = test_pca_phat, response = holdout_test$InHospMortality)
+(pca_auc_mortality <- pROC::auc(predict = test_pca_phat, response = holdout_test$InHospMortality) %>% round(4))
   
 ```
 
 
-### Charlson & Elixhauser
+#### Charlson & Elixhauser
 
+Re-importing ICD data (to include all Charlson & Elixhauser codes)
+
+```{r}
+all_diags <- read.csv(here("/Data/Raw/DIAGNOSES_ICD.csv"))
+
+icd_train <- cv_data %>% select(SUBJECT_ID) %>% merge(., all_diags %>% select(SUBJECT_ID, ICD9_CODE), by="SUBJECT_ID")
+icd_test <- holdout_test %>% select(SUBJECT_ID) %>% merge(., all_diags %>% select(SUBJECT_ID, ICD9_CODE), by="SUBJECT_ID")
+
+# Using Charlson/Elixhauser group membership
+  mortality_charlson_train <- icd_train %>% comorbid_charlson() %>% as.data.frame() %>% cbind(., cv_data %>% select(InHospMortality, Age, GENDER, INSURANCE))
+  mortality_elix_train <- icd_train %>% comorbid_elix() %>% as.data.frame() %>% cbind(., cv_data %>% select(InHospMortality, Age, GENDER, INSURANCE))
+  
+  mortality_charlson_test <- icd_test %>% comorbid_charlson() %>% as.data.frame() %>% cbind(., holdout_test %>% select(InHospMortality, Age, GENDER, INSURANCE))
+  mortality_elix_test <- icd_test %>% comorbid_elix() %>% as.data.frame() %>% cbind(., holdout_test %>% select(InHospMortality, Age, GENDER, INSURANCE))
+  
+  charlson_glm <- glm(InHospMortality ~ ., data=mortality_charlson_train, family = "binomial")
+  elix_glm <- glm(InHospMortality ~ ., data=mortality_elix_train, family = "binomial")
+
+  elix_phat <- predict(object = elix_glm, newdata = mortality_elix_test)
+  elix_auc <- pROC::auc(predict = elix_phat, response=holdout_test$InHospMortality) %>% round(4)
+  
+  charlson_phat <- predict(object = charlson_glm, newdata = mortality_charlson_test)
+  charlson_auc <- pROC::auc(predict = charlson_phat, response=holdout_test$InHospMortality)[1] %>% round(4)
+
+
+# Using "score" (sum of group memberships, i.e. number of groups with a diagnosis)
+  charlson_score_train <- icd_train %>% comorbid_charlson() %>% as.data.frame() %>% mutate(score = rowSums(.)) %>% select(score) %>%  
+                                             cbind(., cv_data %>% select(InHospMortality, Age, GENDER, INSURANCE))
+  elix_score_train <- icd_train %>% comorbid_elix() %>% as.data.frame() %>% mutate(score = rowSums(.)) %>% select(score) %>%  
+                                             cbind(., cv_data %>% select(InHospMortality, Age, GENDER, INSURANCE))
+
+  charlson_score_test <- icd_test %>% comorbid_charlson() %>% as.data.frame() %>% mutate(score = rowSums(.)) %>% select(score) %>%  
+                                             cbind(., holdout_test %>% select(InHospMortality, Age, GENDER, INSURANCE))
+  elix_score_test <- icd_test %>% comorbid_elix() %>% as.data.frame() %>% mutate(score = rowSums(.)) %>% select(score) %>%  
+                                             cbind(., holdout_test %>% select(InHospMortality, Age, GENDER, INSURANCE))
+
+  charlson_score_glm <- glm(InHospMortality ~ ., data=charlson_score_train, family = "binomial")
+  elix_score_glm <- glm(InHospMortality ~ ., data=elix_score_train, family = "binomial")
+
+  elix_score_phat <- predict(object = elix_score_glm, newdata = elix_score_test)
+  elix_score_auc <- pROC::auc(predict = elix_score_phat, response=holdout_test$InHospMortality) %>% round(4)
+  
+  charlson_score_phat <- predict(object = charlson_score_glm, newdata = charlson_score_test)
+  charlson_score_auc <- pROC::auc(predict = charlson_score_phat, response=holdout_test$InHospMortality)[1] %>% round(4)
+```
+
+
+```{r}
+# Printout Results
+cat("Elixhauser Categorical AUC: ", elix_auc, "\n")
+cat("Charlson Categorical AUC: ", charlson_auc, "\n")
+cat("Elixhauser Score AUC: ", elix_score_auc, "\n")
+cat("Charlson Score AUC: ", charlson_score_auc, "\n")
+cat("PCA AUC (retaining", n_retain, "PC's):", pca_auc_mortality, "\n")
+cat("LASSO AUC:", lasso_auc_mortality, "\n")
+
+```
+
+
+### Readmission
 
 
 #### LASSO
 
+```{r}
+glmnet_readmit <-  train(as.factor(Yr1Readmit) ~ .,
+                   data = cv_data_readmit %>% select(matches("^[0-9]"), Yr1Readmit, Age, GENDER, INSURANCE), 
+                   method="glmnet",
+                   metric="AUC",
+                   trControl=cv5)
+
+
+phat_readmit <- predict(object = glmnet_readmit, newdata = holdout_test_readmit, type="prob")
+
+(retained_fts_lasso <- ((glmnet_readmit$finalModel %>% coef(glmnet_readmit$bestTune$lambda))[,1]!=0) %>% sum())
+  # Uses only 48 of 184 covariates (excludes 250.00, 780.39, 274.9, 714.0, 585.9, 441.2, 491.21, 785.0, and Private Insurance)
+
+(lasso_auc_readmit <- pROC::auc(holdout_test_readmit$Yr1Readmit, phat_readmit[,1]) %>% round(4))
+```
 
 #### PCA
 
+```{r}
+pca_readmit <- prcomp(cv_data_readmit %>% select(matches("^[0-9]")), center = T, scale. = T)
+
+(pca_readmit_df <- data.frame(PC = 1:178,
+                         Var = pca_readmit$sdev^2) %>% 
+              mutate(PropVar = Var / nrow(.),
+                     CmltvPropVar = cumsum(PropVar)))
+
+
+pca_readmit_df %>% ggplot(aes(x=PC, y=PropVar)) +
+  geom_point(size=5, alpha=0.4) + geom_line(lwd=0.75) + theme_minimal() +
+  ylab("Proportion of Variance Explained") + xlab("Principal Component") +
+  ggtitle("Proportion of Variance Explained by Individual Principal Component")
+
+
+pca_readmit_df %>% ggplot(aes(x=PC, y=CmltvPropVar)) +
+  geom_point(size=5, alpha=0.4) + geom_line(lwd=0.75) + theme_minimal() +
+  ylab("Cumulative Proportion of Variance Explained") + xlab("Principal Component") +
+  ggtitle("Cumulative Proportion of Variance Explained by Principal Component")
+
+
+n_retain <- 50
+
+rotate_readmit <- (cv_data_readmit %>% select(matches("^[0-9]")) %>% as.matrix())  %*%  pca_readmit$rotation[,1:n_retain]
+
+
+pca_readmit_glm <- glm(Yr1Readmit ~ . ,
+               data = cv_data_readmit %>% select(Yr1Readmit, Age, GENDER, INSURANCE) %>% cbind(., rotate_readmit),
+               family="binomial")   
+
+
+test_rotate_readmit <- (holdout_test_readmit %>% select(matches("^[0-9]")) %>% as.matrix())  %*%  pca_readmit$rotation[,1:n_retain]
+  
+test_pca_readmitdf <- holdout_test_readmit %>% select(Yr1Readmit, Age, GENDER, INSURANCE) %>% cbind(., test_rotate_readmit)
+
+test_pca_phat_readmit <- predict(newdata = test_pca_readmitdf, object=pca_readmit_glm, type="response")
+
+(pca_auc_readmit <- pROC::auc(predict = test_pca_phat_readmit, response = holdout_test_readmit$Yr1Readmit) %>% round(4))
+  
+```
+
 
 #### Charlson & Elixhauser
+```{r}
+all_diags <- read.csv(here("/Data/Raw/DIAGNOSES_ICD.csv"))
+
+icd_train_readmit <- cv_data_readmit %>% select(SUBJECT_ID) %>% merge(., all_diags %>% select(SUBJECT_ID, ICD9_CODE), by="SUBJECT_ID")
+icd_test_readmit <- holdout_test_readmit %>% select(SUBJECT_ID) %>% merge(., all_diags %>% select(SUBJECT_ID, ICD9_CODE), by="SUBJECT_ID")
+
+# Using Charlson/Elixhauser group membership
+  readmit_charlson_train <- icd_train_readmit %>% comorbid_charlson() %>% as.data.frame() %>% cbind(., cv_data_readmit %>% select(Yr1Readmit, Age, GENDER, INSURANCE))
+  readmit_elix_train <- icd_train_readmit %>% comorbid_elix() %>% as.data.frame() %>% cbind(., cv_data_readmit %>% select(Yr1Readmit, Age, GENDER, INSURANCE))
+  
+  readmit_charlson_test <- icd_test_readmit %>% comorbid_charlson() %>% as.data.frame() %>% cbind(., holdout_test_readmit %>% select(Yr1Readmit, Age, GENDER, INSURANCE))
+  readmit_elix_test <- icd_test_readmit %>% comorbid_elix() %>% as.data.frame() %>% cbind(., holdout_test_readmit %>% select(Yr1Readmit, Age, GENDER, INSURANCE))
+  
+  charlson_glm_readmit <- glm(Yr1Readmit ~ ., data=readmit_charlson_train, family = "binomial")
+  elix_glm_readmit <- glm(Yr1Readmit ~ ., data=readmit_elix_train, family = "binomial")
+
+  elix_phat_readmit <- predict(object = elix_glm_readmit, newdata = readmit_elix_test)
+  elix_auc_readmit <- pROC::auc(predict = elix_phat_readmit, response=holdout_test_readmit$Yr1Readmit) %>% round(4)
+  
+  charlson_phat_readmit <- predict(object = charlson_glm_readmit, newdata = readmit_charlson_test)
+  charlson_auc_readmit <- pROC::auc(predict = charlson_phat_readmit, response=holdout_test_readmit$Yr1Readmit)[1] %>% round(4)
+
+
+# Using "score" (sum of group memberships, i.e. number of groups with a diagnosis)
+  charlson_score_train_readmit <- icd_train_readmit %>% comorbid_charlson() %>% as.data.frame() %>% mutate(score = rowSums(.)) %>% select(score) %>%  
+                                             cbind(., cv_data_readmit %>% select(Yr1Readmit, Age, GENDER, INSURANCE))
+  elix_score_train_readmit <- icd_train_readmit %>% comorbid_elix() %>% as.data.frame() %>% mutate(score = rowSums(.)) %>% select(score) %>%  
+                                             cbind(., cv_data_readmit %>% select(Yr1Readmit, Age, GENDER, INSURANCE))
+
+  charlson_score_test_readmit <- icd_test_readmit %>% comorbid_charlson() %>% as.data.frame() %>% mutate(score = rowSums(.)) %>% select(score) %>%  
+                                             cbind(., holdout_test_readmit %>% select(Yr1Readmit, Age, GENDER, INSURANCE))
+  elix_score_test_readmit <- icd_test_readmit %>% comorbid_elix() %>% as.data.frame() %>% mutate(score = rowSums(.)) %>% select(score) %>%  
+                                             cbind(., holdout_test_readmit %>% select(Yr1Readmit, Age, GENDER, INSURANCE))
+
+  charlson_score_glm_readmit <- glm(Yr1Readmit ~ ., data=charlson_score_train_readmit, family = "binomial")
+  elix_score_glm_readmit <- glm(Yr1Readmit ~ ., data=elix_score_train_readmit, family = "binomial")
+
+  elix_score_phat_readmit <- predict(object = elix_score_glm_readmit, newdata = elix_score_test_readmit)
+  elix_score_auc_readmit <- pROC::auc(predict = elix_score_phat_readmit, response=holdout_test_readmit$Yr1Readmit) %>% round(4)
+  
+  charlson_score_phat_readmit <- predict(object = charlson_score_glm_readmit, newdata = charlson_score_test_readmit)
+  charlson_score_auc_readmit <- pROC::auc(predict = charlson_score_phat_readmit, response=holdout_test_readmit$Yr1Readmit)[1] %>% round(4)
+```
+
+
+
+```{r}
+  
+# Printout Results
+cat("Elixhauser Categorical AUC: ", elix_auc_readmit, "\n")
+cat("Charlson Categorical AUC: ", charlson_auc_readmit, "\n")
+cat("Elixhauser Score AUC: ", elix_score_auc_readmit, "\n")
+cat("Charlson Score AUC: ", charlson_score_auc_readmit, "\n")
+cat("PCA AUC (retaining ", n_retain, " components):", pca_auc_readmit, "\n")
+cat("LASSO AUC (retaining", retained_fts_lasso, "features):", lasso_auc_readmit, "\n")
+```
+
