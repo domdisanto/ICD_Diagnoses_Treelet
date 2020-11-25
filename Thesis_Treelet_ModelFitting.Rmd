@@ -30,6 +30,7 @@ library(ggdendro) # Used for dendrogram visualization of Treelet analysis
 library(gghighlight) # Used in cross-validation visualizations
 library(MASS) # Used for glm.nb negative binomial regression function 
 require(stringr) # Some regex matching for filtering in the visualiation of p-values & coefficients from GLM's 
+require(pROC)
 
 select <- dplyr::select # Masking the MASS select function, somethign to do with ridge regression I think, in favor of dplyr's `select()` function for wrangling
 
@@ -203,7 +204,7 @@ For each of our outcomes, similar processes are followed, which include:
      d) Export a data frame that contains test error for each K parameter and fold, and the average test Brier Score and AUC (so 177 observations (for 1 to p-1 values of K), and 13 columns, a K value, test-fold specific Brier Score and AUC values, and the two averages)
 
 
-*A procedural note, the three outcome specific processes below include the same `brier`, `auc`, and `performance_df` named objects, so that each chunk writes over the results of the previous, but each chunk exports the results in its final step.*  
+*A procedural note, the three outcome specific processes below include the same `brier`, `auc`, and `performance_df` named objects, so that each chunk writes over the results of the previous (not saving the resulting R objects for each section, which are large and tend to obstruct my R session), but each chunk exports the results in its final step.*  
   
   
 ### In-Hospital Mortality
@@ -437,9 +438,9 @@ mortality_performance <- mortality_performance %>% mutate(ParamFlag =
 
 ```
 
-#### Cross-Validation Figures
+#### Cross-Validation Figure
 
-```{r}
+```{r, warning=F, message=F}
 ggplot(mortality_performance, aes(x=K, y=BS_TestAvg, color = as.factor(ParamFlag))) +
   geom_line(lwd=1.1, alpha=0.6) + geom_point(size=2.5) +
   theme_minimal() + ggtitle("In-Hospital Mortality Model") + 
@@ -448,6 +449,7 @@ ggplot(mortality_performance, aes(x=K, y=BS_TestAvg, color = as.factor(ParamFlag
   scale_color_brewer(type = "qual", palette = 6) + 
   theme(legend.position=c(0.75, 0.75), text = element_text(size=13.5))
 
+        
 # which.min(mortality_performance$BS_TestAvg)
 # 
 # # AUC Graph if of any interest 
@@ -463,6 +465,7 @@ ggplot(mortality_performance, aes(x=K, y=BS_TestAvg, color = as.factor(ParamFlag
 ```{r}
 # Subsetting the highlighted K parameters above
   mortality_performance[!is.na(mortality_performance$ParamFlag),] 
+  # opt_Ks_mortality <- 
 
 # Refitting the treelet process in our training data to pull optimal L's for our highlighted K's
   cv_xmat <- cv_data  %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
@@ -533,7 +536,7 @@ cv_predictors <- cv_data %>% select(GENDER, Age, INSURANCE, InHospMortality) %>%
 dim(cv_predictors)
 
 train_glm <- glm(InHospMortality ~ . , data=cv_predictors, family = "binomial")
-train_glm %>% summary()
+# train_glm %>% summary()
 # confint(train_glm, parm = 1:7)
 
 test_xmat <- holdout_test  %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
@@ -576,12 +579,13 @@ train_glm %>% summary() %>% .$coefficients %>% as.data.frame() %>% mutate(Covari
         legend.position = c(0.9, 0.65)) + 
   labs(caption="Inset text notes feature numbers of five highest coefficients") +
   xlab ("Treelet Feature") + ylab("-log(P-Value)") +
-  scale_fill_continuous(type="viridis", name="Coefficient") 
+  scale_fill_continuous(type="viridis", name="Coefficient", direction=-1) 
 
 ```
 
 
-##### Graphing Phat Distributions
+
+###### Graphing Phat Distributions 
 
 ```{r}
 phat_df <- as.data.frame(cbind("EventProb" = phat, "ObsOut"=test_predictors$InHospMortality))
@@ -599,41 +603,103 @@ phat_df %>% ggplot(aes(x=EventProb, fill=as.factor(ObsOut))) +
 ```
 
 
-##### Comparative Models 
+##### Fitting Model Without ICD Codes
 
 ```{r}
-# Logistic Regression of Retained Codes, no Basis Loading Scores
-retained_codes <- loading_mat_mortality$code %>% unique()
-length(retained_codes)
+cv_predictors_noicd <- cv_predictors %>% select(-matches("[0-9]"))
 
-retain_traindf <- cv_data %>% select(GENDER, Age, INSURANCE, InHospMortality, !!retained_codes)
+train_glm_noicd <- glm(InHospMortality ~ . , data=cv_predictors_noicd, family = "binomial")
+#train_glm_noicd %>% summary()
+# confint(train_glm, parm = 1:7)
 
-retain_train_glm <- glm(InHospMortality ~ . , data=retain_traindf, family = "binomial")
+test_predictors_noicd <- holdout_test %>% select(GENDER, Age, INSURANCE, InHospMortality) 
 
-retain_test_df <- holdout_test %>% select(GENDER, Age, INSURANCE, InHospMortality, !!retained_codes)
-
-retain_phat <- predict(object = retain_train_glm, newdata = retain_test_df, type="response") 
+phat_noicd <- predict(object = train_glm_noicd, newdata = test_predictors_noicd, type="response") 
       
-sum((retain_phat - retain_test_df$InHospMortality)^2) / nrow(retain_test_df)
-  pROC::roc(retain_test_df$InHospMortality, retain_phat)$auc
+brier_test_noicd <- sum((phat_noicd - test_predictors_noicd$InHospMortality)^2) / nrow(test_predictors_noicd)
+auc_test_noicd <- pROC::roc(test_predictors_noicd$InHospMortality, phat_noicd)$auc
 
+# Exporting full model estimates 
+ci95s_noicd <- confint.default(train_glm_noicd) # Using Wald approximation for confidence intervals, profile likelihood using confint() from MASS takes minutes to run (when it isn't crashing my R session) 
 
-# Logistic Regression of All Codes
-all_traindf <- cv_data %>% select(GENDER, Age, INSURANCE, InHospMortality, matches("[0-9]$"))
+cbind(train_glm_noicd %>% summary() %>% .$coefficients %>% as.data.frame() %>% select(Estimate) %>% round(3),
+      CI=paste0("[", (ci95s_noicd %>% round(3))[,1], ", ", (ci95s_noicd %>% round(3))[,2], "]"),
+      train_glm_noicd %>% summary() %>% .$coefficients %>% as.data.frame() %>% select(`Pr(>|z|)`) %>% round(4)) #%>% write.table("clipboard")
 
-all_train_glm <- glm(InHospMortality ~ . , data=all_traindf, family = "binomial")
+```
 
-all_test_df <- holdout_test %>% select(GENDER, Age, INSURANCE, InHospMortality, matches("[0-9]$"))
+##### Fitting with Most Significant Features
+```{r}
+# Pulling the five most significant 
+# train_glm %>% summary() %>% .$coefficients %>% as.data.frame() %>% arrange(`Pr(>|z|)`) %>% tibble::rownames_to_column() %>% filter(str_detect(rowname,"[0-9]"))
 
-all_phat <- predict(object = all_train_glm, newdata = all_test_df, type="response") 
+top5_tt_ftrs <- train_glm %>% summary() %>% .$coefficients %>% as.data.frame() %>% arrange(`Pr(>|z|)`) %>% 
+  tibble::rownames_to_column() %>% filter(str_detect(rowname, "[0-9]")) %>% filter(row_number()<=5) %>% pull(rowname) %>% 
+  str_replace_all("`", "")
+
+top5_train_df <- cv_predictors %>% dplyr::select(GENDER, Age, INSURANCE, InHospMortality, `1`, `15`, `13`, `2`, `7`)
+
+top5_glm <- glm(InHospMortality ~ ., data=top5_train_df, family="binomial")
+
+test_predictors_top5 <- holdout_test %>% select(GENDER, Age, INSURANCE, InHospMortality) %>% cbind(., test_xmat_transform) %>% as.data.frame() %>% 
+  select(GENDER, Age, INSURANCE, InHospMortality, all_of(top5_tt_ftrs))
+
+phat_top5 <- predict(object = top5_glm, newdata = test_predictors_top5, type="response") 
       
-sum((all_phat - all_test_df$InHospMortality)^2) / nrow(retain_test_df)
-pROC::roc(all_test_df$InHospMortality, all_phat)$auc
+brier_test_noicd <- sum((phat_top5 - test_predictors_top5$InHospMortality)^2) / nrow(test_predictors_top5)
+auc_test_noicd <- pROC::roc(test_predictors_top5$InHospMortality, phat_top5)$auc
+
+
+```
+
+
+##### Comparative ROC
+
+```{r, warning=F, message=F}
+
+roc_obj_noicd <- pROC::roc(test_predictors_noicd$InHospMortality, phat_noicd)
+roc_obj <- pROC::roc(test_predictors$InHospMortality, phat)
+roc_top5 <- pROC::roc(test_predictors_top5$InHospMortality, phat_top5)
+
+pROC::ggroc(list(roc_obj, roc_top5, roc_obj_noicd), lwd=1.4) + 
+  theme_minimal() +
+  xlab("Specificity") + ylab("Sensitivity") +
+  theme(axis.text.x = element_blank(),
+        # panel.grid.major = element_blank(),
+        # panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.title.x = element_text(size=16),
+        axis.title.y = element_text(size=16),
+        legend.title = element_text(size=12.4),
+        legend.text =  element_text(size=10),
+        legend.position = c(0.6, 0.2)) + 
+  scale_color_brewer(type="qual", palette=2,
+                     name="Model",
+                     labels = c("Including All ICD-9-CM Treelet Features (AUC=0.858)",
+                                "Including 5 Most Significant ICD-9-CM\nTreelet Features (AUC=0.830)",
+                                "Excluding ICD-9-CM Treelet Features (AUC=0.666)")) +
+  ggtitle("Comparative ROC Curves of Mortality Predictions in Test Data")
+
 
 ```
 
 
 
+###### Probability Distributions of No ICD Model
+
+```{r}
+phat_df_noicd_readmit <- as.data.frame(cbind("EventProb" = phat_readmit_noicd, "ObsOut"=test_predictors_readmit_noicd$Yr1Readmit))
+
+phat_df_noicd_readmit %>% ggplot(aes(x=EventProb, fill=as.factor(ObsOut))) +
+  geom_density(alpha=0.3) + theme_minimal() +
+  theme(legend.position=c(0.14, 0.6), text=element_text(size=13.5)) +
+  ylab("Density") + xlab("Predicted Probability of In-Hospital Mortality")  + 
+  scale_fill_manual(name="Observed Outcome", 
+                      labels=c("No Mortality", "Mortality Event"),
+                      values=c("lightblue", "violetred4")) +
+  ggtitle("Density Curve of Predicted Probabilities of Hospital Re-admission")
+```
 
 ### Readmission
 
@@ -744,8 +810,8 @@ cv_xmat_transform_readmit <- cv_readmit_xmat %*% final_basis_readmit
 cv_predictors_readmit <- cv_data_readmit %>% select(GENDER, Age, INSURANCE, Yr1Readmit) %>% cbind(., cv_xmat_transform_readmit) %>% as.data.frame()
 
 train_glm_readmit <- glm(Yr1Readmit ~ . , data=cv_predictors_readmit, family = "binomial")
-train_glm_readmit %>% summary()
-confint(train_glm, parm = 1:7)
+# train_glm_readmit %>% summary()
+# confint(train_glm, parm = 1:7)
 
 
 test_xmat_readmit <- holdout_test_readmit  %>% select(matches("0|1|2|4|5|6|9")) %>% select(-Yr1Readmit) %>% as.matrix()
@@ -789,7 +855,7 @@ train_glm_readmit %>% summary() %>% .$coefficients %>% as.data.frame() %>% mutat
         legend.position = c(0.9, 0.65)) + 
   labs(caption="Inset text notes feature numbers of five highest coefficients") +
   xlab ("Treelet Feature") + ylab("-log(P-Value)") +
-  scale_fill_continuous(type="viridis", name="Coefficient") 
+  scale_fill_continuous(type="viridis", name="Coefficient", direction=-1) 
 
 ```
 
@@ -811,40 +877,101 @@ phat_readmit_df %>% ggplot(aes(x=EventProb, fill=as.factor(ObsOut))) +
 
 ```
 
-
-##### Comparative Models 
+##### Fitting Model Without ICD Codes
 
 ```{r}
-# Logistic Regression of Retained Codes, no Basis Loading Scores
-retained_codes_readmit <- loading_mat_readmit$code %>% unique()
-length(retained_codes_readmit)
+cv_predictors_readmit_noicd <- cv_predictors_readmit %>% select(-matches("^[0-9]"))
 
-retain_traindf_readmit <- cv_data_readmit %>% select(GENDER, Age, INSURANCE, Yr1Readmit, !!retained_codes_readmit)
+train_glm_readmit_noicd <- glm(Yr1Readmit ~ . , data=cv_predictors_readmit_noicd, family = "binomial")
 
-retain_train_glm_readmit <- glm(Yr1Readmit ~ . , data=retain_traindf_readmit, family = "binomial")
+test_predictors_readmit_noicd <- holdout_test_readmit %>% select(GENDER, Age, INSURANCE, Yr1Readmit) 
 
-retain_test_df_readmit <- holdout_test_readmit %>% select(GENDER, Age, INSURANCE, Yr1Readmit, !!retained_codes_readmit)
-
-retain_phat_readmit <- predict(object = retain_train_glm_readmit, newdata = retain_test_df_readmit, type="response") 
+phat_readmit_noicd <- predict(object = train_glm_readmit_noicd, newdata = test_predictors_readmit_noicd, type="response") 
       
-sum((retain_phat_readmit - retain_test_df_readmit$Yr1Readmit)^2) / length(retain_phat_readmit)
-  pROC::roc(retain_test_df_readmit$Yr1Readmit, retain_phat_readmit)$auc
+brier_test_noicd <- sum((phat_readmit_noicd - test_predictors_readmit_noicd$Yr1Readmit)^2) / nrow(test_predictors_readmit_noicd)
+auc_test_noicd <- pROC::roc(test_predictors_readmit_noicd$Yr1Readmit, phat_readmit_noicd)$auc
 
+# Exporting full model estimates 
+ci95s_readmit_noicd <- confint.default(train_glm_readmit_noicd) # Using Wald approximation for confidence intervals, profile likelihood using confint() from MASS takes minutes to run (when it isn't crashing my R session) 
 
-# Logistic Regression of All Codes
-all_traindf_readmit <- cv_data_readmit %>% select(GENDER, Age, INSURANCE, Yr1Readmit, matches("[0-9]$"))
+cbind(train_glm_readmit_noicd %>% summary() %>% .$coefficients %>% as.data.frame() %>% select(Estimate) %>% round(3),
+      CI=paste0("[", (ci95s_readmit_noicd %>% round(3))[,1], ", ", (ci95s_readmit_noicd %>% round(3))[,2], "]"),
+      train_glm_readmit_noicd %>% summary() %>% .$coefficients %>% as.data.frame() %>% select(`Pr(>|z|)`) %>% round(4)) #%>% write.table("clipboard")
 
-all_train_glm_readmit <- glm(Yr1Readmit ~ . , data=all_traindf_readmit, family = "binomial")
+```
 
-all_test_df_readmit <- holdout_test_readmit %>% select(GENDER, Age, INSURANCE, Yr1Readmit, matches("[0-9]$"))
+##### Fitting with Most Significant Features
+```{r}
+# Pulling the five most significant 
+# train_glm %>% summary() %>% .$coefficients %>% as.data.frame() %>% arrange(`Pr(>|z|)`) %>% tibble::rownames_to_column() %>% filter(str_detect(rowname,"[0-9]"))
 
-all_phat_readmit <- predict(object = all_train_glm_readmit, newdata = all_test_df_readmit, type="response") 
+top5_tt_ftrs_readmit <- train_glm_readmit %>% summary() %>% .$coefficients %>% as.data.frame() %>% arrange(`Pr(>|z|)`) %>% 
+  tibble::rownames_to_column() %>% filter(str_detect(rowname, "[0-9]")) %>% filter(row_number()<=5) %>% pull(rowname) %>% 
+  str_replace_all("`", "")
+
+top5_train_df_readmit <- cv_predictors_readmit %>% dplyr::select(GENDER, Age, INSURANCE, Yr1Readmit, all_of(top5_tt_ftrs_readmit))
+
+top5_glm_readmit <- glm(Yr1Readmit ~ ., data=top5_train_df_readmit, family="binomial")
+
+test_predictors_top5_readmit <- holdout_test_readmit %>% select(GENDER, Age, INSURANCE, Yr1Readmit) %>% cbind(., test_xmat_transform) %>% as.data.frame() %>% 
+  select(GENDER, Age, INSURANCE, Yr1Readmit, all_of(top5_tt_ftrs_readmit))
+
+phat_top5_readmit <- predict(object = top5_glm_readmit, newdata = test_predictors_top5_readmit, type="response") 
       
-sum((all_phat_readmit - all_test_df_readmit$Yr1Readmit)^2) / length(all_phat_readmit)
-pROC::roc(all_test_df_readmit$Yr1Readmit, all_phat_readmit)$auc
+brier_test_noicd <- sum((phat_top5_readmit - test_predictors_top5_readmit$Yr1Readmit)^2) / nrow(test_predictors_top5_readmit)
+auc_test_noicd <- pROC::roc(test_predictors_top5_readmit$Yr1Readmit, phat_top5_readmit)$auc
+
+
 ```
 
 
+##### Comparative ROC
+
+```{r, warning=F, message=F}
+
+roc_obj_noicd_readmit <- pROC::roc(test_predictors_top5_readmit$Yr1Readmit, phat_readmit_noicd)
+roc_obj_readmit <- pROC::roc(test_predictors_top5_readmit$Yr1Readmit, phat_readmit)
+roc_top5_readmit <- pROC::roc(test_predictors_top5_readmit$Yr1Readmit, phat_top5_readmit)
+
+pROC::ggroc(list(roc_obj_readmit, roc_top5_readmit, roc_obj_noicd_readmit), lwd=1.4) + 
+  theme_minimal() +
+  xlab("Specificity") + ylab("Sensitivity") +
+  theme(axis.text.x = element_blank(),
+        # panel.grid.major = element_blank(),
+        # panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.title.x = element_text(size=16),
+        axis.title.y = element_text(size=16),
+        legend.title = element_text(size=12.4),
+        legend.text =  element_text(size=10),
+        legend.position = c(0.64, 0.2)) + 
+  scale_color_brewer(type="qual", palette=2,
+                     name="Model",
+                     labels = c("Including All ICD-9-CM Treelet Features (AUC=0.661)",
+                                "Including 5 Most Significant ICD-9-CM Treelet Features (AUC = 0.658)",
+                                "Excluding ICD-9-CM Treelet Features  (AUC=0.574)")) +
+  ggtitle("Comparative ROC Curves of Hospital Re-admission Predictions in Test Data")
+
+
+```
+
+
+
+###### Probability Distributions of No ICD Model
+
+```{r}
+phat_df_noicd <- as.data.frame(cbind("EventProb" = phat_noicd, "ObsOut"=test_predictors_noicd$InHospMortality))
+
+phat_df_noicd %>% ggplot(aes(x=EventProb, fill=as.factor(ObsOut))) +
+  geom_density(alpha=0.3) + theme_minimal() +
+  theme(legend.position=c(0.7, 0.6), text=element_text(size=13.5)) +
+  ylab("Density") + xlab("Predicted Probability of In-Hospital Mortality")  + 
+  scale_fill_manual(name="Observed Outcome", 
+                      labels=c("No Mortality", "Mortality Event"),
+                      values=c("lightblue", "violetred4")) +
+  ggtitle("Density Curve of Predicted Probabilities of In-Hospital Mortality")
+```
 
 
 
@@ -938,12 +1065,34 @@ tt_fnc_los$retained_fts[[46]]
 ```
 
 
+```{r}
+retained_codes <- loading_mat_los$code %>% unique()
+length(retained_codes)
+retain_traindf <- cv_data %>% select(GENDER, Age, INSURANCE, HospitalLOS, !!retained_codes)
+retain_train_glm <- glm.nb(HospitalLOS ~ . , data=retain_traindf)
+retain_test_df <- holdout_test %>% select(GENDER, Age, INSURANCE, InHospMortality, !!retained_codes)
+retain_yhat <- predict(object = retain_train_glm, newdata = retain_test_df, type="response") 
+      
+(sum((retain_yhat - retain_test_df$InHospMortality)^2) / nrow(retain_test_df)) %>% sqrt()
+
+# And trying all codes
+retainall_traindf <- cv_data %>% select(GENDER, Age, INSURANCE, HospitalLOS, matches("^[0-9]"))
+retainall_train_glm <- glm.nb(HospitalLOS ~ . , data=retainall_traindf)
+retainall_test_df <- holdout_test %>% select(GENDER, Age, INSURANCE, InHospMortality, matches("^[0-9]"))
+retainall_yhat <- predict(object = retainall_train_glm, newdata = retainall_test_df, type="response") 
+      
+(sum((retainall_yhat - retainall_test_df$InHospMortality)^2) / nrow(retainall_test_df)) %>% sqrt()
+
+```
+
 
 #### Building Final Model and Assessting Test Fit
 
 First fitting the Poisson model to assess overdispersion using the resulting deviance and $\chi^2$ distribution.
 
 ```{r}
+cv_predictors <- cv_data %>% select(GENDER, Age, INSURANCE, HospitalLOS) %>% cbind(., cv_xmat_transform) %>% as.data.frame()
+
 poisson_los <- glm(HospitalLOS ~ . , data=cv_predictors, family="poisson")
 poisson_los$deviance / poisson_los$df.residual # Values near 1 indicate evenly dispersed data (mean ~= variance), our value of 5.78 indicates overdispersion (variance ~=5.8*mean)
 
@@ -964,8 +1113,8 @@ cv_predictors <- cv_data %>% select(GENDER, Age, INSURANCE, HospitalLOS) %>% cbi
 dim(cv_predictors)
 
 train_glm_los <- glm.nb(HospitalLOS ~ . , data=cv_predictors)
-train_glm_los %>% summary()
-train_glm_los %>% str()
+# train_glm_los %>% summary()
+# train_glm_los %>% str()
 
 # confint(train_glm_los, parm = 1:7)
 
@@ -1007,7 +1156,7 @@ train_glm_los %>% summary() %>% .$coefficients %>% as.data.frame() %>% mutate(Co
         legend.position = c(0.9, 0.65)) + 
   labs(caption="Inset text notes feature numbers of five highest coefficients") +
   xlab ("Treelet Feature") + ylab("-log(P-Value)") +
-  scale_fill_continuous(type="viridis", name="Coefficient") 
+  scale_fill_continuous(type="viridis", name="Coefficient", direction=-1) 
 ```
 
 ##### LOS Density Curve
@@ -1091,7 +1240,7 @@ yhat_df %>% ggplot(aes(x=ObservedLOS, y=PredictedLOS, color=as.factor(PredictedL
   theme(legend.position=c(0.7, 0.6), text=element_text(size=13.5)) +
   ylab("Predicted Length of Stay") + xlab("Observed Length of Stay")  +
   scale_color_manual(name="Prediction Error Direction",
-                      labels=c("Predicted LOS > Observed LOS", "Predicted LOS < Observed LOS"),
+                      labels=c("Observed LOS > Predicted LOS", "Observed LOS < Predicted LOS"),
                       values=c("dodgerblue", "violetred4")) +
   ggtitle("Scatter Plot of Predicted and Observed Length of Stay Values") +
   # geom_text(x=125, y=30, label="Correlation of Predicted and\nObserved Length of Stay Values = 0.393") + 
@@ -1145,38 +1294,89 @@ los_dens_df %>% ggplot(aes(x=LOS, fill=as.factor(Type))) +
 
 
 
-##### Comparative Models 
+##### Fitting Model Without ICD Codes
 
 ```{r}
-# Logistic Regression of Retained Codes, no Basis Loading Scores
-retained_codes <- loading_mat_los$code %>% unique()
-length(retained_codes)
+cv_predictors_noicd <- cv_predictors %>% select(-matches("[0-9]"))
 
-retain_traindf <- cv_data %>% select(GENDER, Age, INSURANCE, InHospMortality, !!retained_codes)
+train_glm_noicd <- glm.nb(HospitalLOS ~ . , data=cv_predictors_noicd)
+#train_glm_noicd %>% summary()
+# confint(train_glm, parm = 1:7)
 
-retain_train_glm <- glm(InHospMortality ~ . , data=retain_traindf, family = "binomial")
+test_predictors_noicd <- holdout_test %>% select(GENDER, Age, INSURANCE, HospitalLOS) 
 
-retain_test_df <- holdout_test %>% select(GENDER, Age, INSURANCE, InHospMortality, !!retained_codes)
-
-retain_phat <- predict(object = retain_train_glm, newdata = retain_test_df, type="response") 
+yhat_noicd <- predict(object = train_glm_noicd, newdata = test_predictors_noicd, type="response") 
       
-sum((retain_phat - retain_test_df$InHospMortality)^2) / nrow(retain_test_df)
-  pROC::roc(retain_test_df$InHospMortality, retain_phat)$auc
+(MSE <- sum((yhat_noicd - test_predictors_noicd$HospitalLOS)^2) / nrow(test_predictors_noicd)) %>% sqrt()
 
+# Exporting full model estimates 
+ci95s_noicd <- confint.default(train_glm_noicd) # Using Wald approximation for confidence intervals, profile likelihood using confint() from MASS takes minutes to run (when it isn't crashing my R session) 
 
-# Logistic Regression of All Codes
-all_traindf <- cv_data %>% select(GENDER, Age, INSURANCE, InHospMortality, matches("[0-9]$"))
+cbind(train_glm_noicd %>% summary() %>% .$coefficients %>% as.data.frame() %>% select(Estimate) %>% round(3),
+      CI=paste0("[", (ci95s_noicd %>% round(3))[,1], ", ", (ci95s_noicd %>% round(3))[,2], "]"),
+      train_glm_noicd %>% summary() %>% .$coefficients %>% as.data.frame() %>% select(`Pr(>|z|)`) %>% round(4)) #%>% write.table("clipboard")
 
-all_train_glm <- glm(InHospMortality ~ . , data=all_traindf, family = "binomial")
-
-all_test_df <- holdout_test %>% select(GENDER, Age, INSURANCE, InHospMortality, matches("[0-9]$"))
-
-all_phat <- predict(object = all_train_glm, newdata = all_test_df, type="response") 
-      
-sum((all_phat - all_test_df$InHospMortality)^2) / nrow(retain_test_df)
-pROC::roc(all_test_df$InHospMortality, all_phat)$auc
 ```
 
+##### Fitting with Most Significant Features
+```{r}
+# Pulling the five most significant 
+# train_glm %>% summary() %>% .$coefficients %>% as.data.frame() %>% arrange(`Pr(>|z|)`) %>% tibble::rownames_to_column() %>% filter(str_detect(rowname,"[0-9]"))
+
+top_tt_ftrs_los <- train_glm_los %>% summary() %>% .$coefficients %>% as.data.frame() %>% arrange(`Pr(>|z|)`) %>% 
+  tibble::rownames_to_column() %>% filter(str_detect(rowname, "[0-9]")) %>% pull(rowname) %>% 
+  str_replace_all("`", "")
+
+  
+  
+
+
+
+for (i in 1:46){
+  los_subdf <- cv_predictors %>% select(GENDER, Age, INSURANCE, HospitalLOS, all_of(top_tt_ftrs_los[1:i]))
+  sub_los_glm <- glm.nb(HospitalLOS ~ ., data=los_subdf)
+  
+  los_test_subdf <- holdout_test %>% select(GENDER, Age, INSURANCE, HospitalLOS) %>% cbind(., test_xmat_transform) %>% as.data.frame() %>% 
+  select(GENDER, Age, INSURANCE, HospitalLOS, all_of(top_tt_ftrs_los[1:i]))
+  
+  yhat_sub <- predict(object = sub_los_glm, newdata = los_test_subdf, type="response") 
+      
+  RMSE_sub <- (MSE <- sum((yhat_sub - los_test_subdf$HospitalLOS)^2) / nrow(los_test_subdf)) %>% sqrt()
+
+  if(i ==1) RMSE_vec <- RMSE_sub else{
+  RMSE_vec <- c(RMSE_vec, RMSE_sub)
+  }
+
+}
+
+data.frame(RMSE = RMSE_vec, FeaturesRetained = 1:46)  %>% 
+  ggplot(aes(x=FeaturesRetained, y=RMSE_vec)) +
+  geom_point() + geom_line() +
+  theme_minimal() +
+  ylab("Root MSE") + xlab("Number of Treelet Features Retained")
+  
+
+```
+
+
+###### Prediction Scatter Plot of No ICD Model
+
+```{r}
+
+yhat_noicd_df <- as.data.frame(cbind("PredictedLOS" = yhat_noicd, "ObservedLOS"=test_predictors_noicd$HospitalLOS))
+
+
+yhat_noicd_df %>% ggplot(aes(x=ObservedLOS, y=PredictedLOS, color=as.factor(PredictedLOS>ObservedLOS))) +
+  geom_point(alpha=0.3) + theme_minimal() +
+  theme(legend.position=c(0.7, 0.6), text=element_text(size=13.5)) +
+  ylab("Predicted Length of Stay") + xlab("Observed Length of Stay")  +
+  scale_color_manual(name="Prediction Error Direction",
+                      labels=c("Predicted LOS > Observed LOS", "Predicted LOS < Observed LOS"),
+                      values=c("dodgerblue", "violetred4")) +
+  ggtitle("Scatter Plot of Predicted and Observed Length of Stay Values") +
+  # geom_text(x=125, y=30, label="Correlation of Predicted and\nObserved Length of Stay Values = 0.393") + 
+  NULL 
+```
 
 
 ## Appendix Analysis: Comparative Models
@@ -1189,7 +1389,7 @@ Exploratory analysis to see how the results of the treelet modelling above compa
 ```{r}
 require(caret)
 
-cv5 <- trainControl(method="cv", 
+cv5 <- caret::trainControl(method="cv", 
                     number=5)
 
 cv_data %>% head()
@@ -1203,12 +1403,11 @@ cv_data_readmit %>% head()
 #### LASSO
 
 ```{r}
-lasso_mortality <-  train(as.factor(InHospMortality) ~ .,
+lasso_mortality <-  caret::train(as.factor(InHospMortality) ~ .,
                    data = cv_data %>% select(matches("^[0-9]"), InHospMortality, Age, GENDER, INSURANCE), 
                    method="glmnet",
                    metric="AUC",
                    trControl=cv5)
-
 
 phat_lasso <- predict(object = lasso_mortality, newdata = holdout_test, type="prob")
 
@@ -1447,5 +1646,112 @@ cat("Elixhauser Score AUC: ", elix_score_auc_readmit, "\n")
 cat("Charlson Score AUC: ", charlson_score_auc_readmit, "\n")
 cat("PCA AUC (retaining ", n_retain, " components):", pca_auc_readmit, "\n")
 cat("LASSO AUC (retaining", retained_fts_lasso, "features):", lasso_auc_readmit, "\n")
+```
+
+
+
+### Length of Stay
+
+Due to the length of stay and mortality data sets having the same training data/cross-validation splits, I can simply re-use the PCA and Charlson/Elixhauser data used in the Mortality section and fit the negative binomial models
+
+#### LASSO 
+```{r}
+require(mpath)
+
+los_traindf <- cv_data %>% select(matches("^[0-9]"), HospitalLOS, Age, GENDER, INSURANCE)
+
+lasso_train_results <- glmregNB(formula = HospitalLOS ~ ., data = los_traindf)
+
+los_train_yhat <- predict(object = lasso_train_results, los_traindf, type="response")
+
+for(i in 1:ncol(los_train_yhat)) {
+  yhat_vec <- los_train_yhat[,i]
+  
+  if(i==1) RMSE <- (sum((yhat_vec - los_traindf$HospitalLOS)^2) / length(yhat_vec)) %>% sqrt() else{
+    RMSE <- c(RMSE, (sum((yhat_vec - los_traindf$HospitalLOS)^2) / length(yhat_vec)) %>% sqrt())
+  }
+}
+
+
+lambda_results <- data.frame(lambda=lasso_train_results$lambda, 
+                             RMSE)
+
+lambda_results <- lambda_results %>% mutate(ParamFlag = 
+                                   case_when(
+                                     RMSE==min(RMSE) ~ "Minimizes RMSE",
+                                     lambda==max(lambda_results[lambda_results$RMSE<=(min(lambda_results$RMSE) + sd(lambda_results$RMSE)), "lambda"]) ~ "More Sparse Parameter",
+                                     TRUE ~ NA_character_
+                                   )) %>% ungroup()
+
+ggplot(lambda_results, aes(x=lambda, y=RMSE, color=as.factor(ParamFlag))) +
+  geom_line(lwd=1.1, alpha=0.6) + geom_point(size=2.5) +
+  theme_minimal() + ggtitle("Length of Stay LASSO") + 
+  xlab("Value of Shrinkage Lambda") + ylab("RMSE (Across 5 Test Folds)") + 
+  gghighlight(ParamFlag!=0) + labs(color="Optimal Parameters") +
+  scale_color_brewer(type = "qual", palette = 6) + 
+  theme(legend.position=c(0.2, 0.75), text = element_text(size=13.5))
+
+
+lambda_1sd <- lambda_results %>% filter(ParamFlag == "More Sparse Parameter") %>% pull(lambda)
+
+los_test_yhat <- predict(object = lasso_train_results, holdout_test, type="response")
+
+lambda_1sd_test <- colnames(los_test_yhat)[which.min(abs(colnames(los_test_yhat) %>% as.numeric() - lambda_1sd))]
+
+
+test_rmse <- (sum((los_test_yhat[, lambda_1sd_test] - holdout_test$HospitalLOS)^2)/nrow(holdout_test)) %>% sqrt()
+
+# And using the optimal lambda
+lambda_1sd_opt <- lambda_results %>% filter(ParamFlag == "Minimizes RMSE") %>% pull(lambda)
+
+lambda_1sd_test_opt <- colnames(los_test_yhat)[which.min(abs(colnames(los_test_yhat) %>% as.numeric() - lambda_1sd_opt))]
+
+
+test_rmse <- (sum((los_test_yhat[, lambda_1sd_test_opt] - holdout_test$HospitalLOS)^2)/nrow(holdout_test)) %>% sqrt()
+
+
+# Outputting number of features retained in teh 1-SD lambda 
+(retained_fts_los_lasso <- lasso_train_results %>% coef(lambda_1sd))
+
+retained_fts_los_lasso %>% nrow()
+```
+
+#### PCA 
+
+```{r}
+pca_nb <- glm.nb(HospitalLOS ~ . ,
+               data = cv_data %>% select(HospitalLOS, Age, GENDER, INSURANCE) %>% cbind(., rotate_icd))
+
+
+test_rotate <- (holdout_test %>% select(matches("^[0-9]")) %>% as.matrix())  %*%  pca_results$rotation[,1:n_retain]
+
+test_los_pcadf <- holdout_test %>% select(HospitalLOS, Age, GENDER, INSURANCE) %>% cbind(., test_rotate)
+
+test_yhat_pca <- predict(newdata = test_los_pcadf, object=pca_nb, type="response")
+
+(pca_rmse_los <- (sum((test_yhat_pca - test_los_pcadf$HospitalLOS)^2)/nrow(test_los_pcadf)) %>% sqrt())
+
+```
+
+
+#### Charlson & Elixhauser
+
+```{r}
+mortality_charlson_train <- icd_train %>% comorbid_charlson() %>% as.data.frame() %>% cbind(., cv_data %>% select(HospitalLOS, Age, GENDER, INSURANCE))
+mortality_elix_train <- icd_train %>% comorbid_elix() %>% as.data.frame() %>% cbind(., cv_data %>% select(HospitalLOS, Age, GENDER, INSURANCE))
+  
+mortality_charlson_test <- icd_test %>% comorbid_charlson() %>% as.data.frame() %>% cbind(., holdout_test %>% select(HospitalLOS, Age, GENDER, INSURANCE))
+mortality_elix_test <- icd_test %>% comorbid_elix() %>% as.data.frame() %>% cbind(., holdout_test %>% select(HospitalLOS, Age, GENDER, INSURANCE))
+  
+charlson_nb <- glm.nb(HospitalLOS ~ ., data=mortality_charlson_train)
+elix_nb <- glm.nb(HospitalLOS ~ ., data=mortality_elix_train)
+
+elix_yhat <- predict(object = elix_nb, newdata = mortality_elix_test)
+charlson_yhat <- predict(object = charlson_nb, newdata = mortality_charlson_test)
+
+
+(charlson_rmse_los <- (sum((charlson_yhat - mortality_charlson_test$HospitalLOS)^2)/nrow(mortality_charlson_test)) %>% sqrt() ) 
+(elix_rmse_los <- (sum((elix_yhat - mortality_elix_test$HospitalLOS)^2)/nrow(mortality_elix_test)) %>% sqrt() )
+
 ```
 
