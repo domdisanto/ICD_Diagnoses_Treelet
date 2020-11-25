@@ -863,6 +863,10 @@ top10_corr_plot <- icd_cohort %>%
   select(-SUBJECT_ID) %>% 
   corr_cross(top=10, plot=F)
 
+top10_corr_plot <- top10_corr_plot %>%  mutate(group1 = 
+                             paste0(substr(group1, 0, 3), ".", substr(group1, 4, nchar(group1))),
+                           group2 = 
+                             paste0(substr(group2, 0, 3), ".", substr(group2, 4, nchar(group2))))
 
 barplot <- top10_corr_plot %>% mutate(Pair = paste0(group1, ", ", group2)) %>% 
   ggplot(aes(x=reorder(Pair, corr), y=round(corr, 2))) +
@@ -878,14 +882,15 @@ require(grid)
 
 corrtbl <- c(top10_corr_plot %>% pull(group1) %>% unique(),
              t(t(top10_corr_plot %>% pull(group2) %>% unique()))) %>% unique() %>% data.frame(ICD9_CODE=.) %>%
-  merge(icd_descr %>% select(ICD9_CODE, SHORT_TITLE), by="ICD9_CODE", all.x=T) %>% arrange(ICD9_CODE) %>% 
+  merge(icd_descr %>% select(ICD9_CODE, SHORT_TITLE) %>% 
+          mutate(ICD9_CODE = paste0(substr(ICD9_CODE, 0, 3), ".", substr(ICD9_CODE, 4, nchar(ICD9_CODE)))), by="ICD9_CODE", all.x=T) %>% arrange(ICD9_CODE) %>% 
   mutate(SHORT_TITLE = case_when(is.na(SHORT_TITLE) ~ "Digestive system complications NOS",
-                                 ICD9_CODE=="25060" ~  "Diabetes (II) with neurological manifestations", 
-                                 ICD9_CODE=="29410" ~  "Dementia without behavioral disturbance",
-                                 ICD9_CODE=="40390" ~  "Hypertensive chronic kidney disease, stage I-IV",
-                                 ICD9_CODE=="40391" ~  "Hypertensive chronic kidney disease, stage V+",
-                                 ICD9_CODE=="5859" ~  "Chronic kidney disease NOS",
-                                 TRUE ~ SHORT_TITLE)) %>% select(`ICD-9-CM Code`=ICD9_CODE, `Description`=SHORT_TITLE) %>% tableGrob(rows = NULL)
+                                 ICD9_CODE=="250.60" ~  "Diabetes (II) with neurological manifestations", 
+                                 ICD9_CODE=="294.10" ~  "Dementia without behavioral disturbance",
+                                 ICD9_CODE=="403.90" ~  "Hypertensive chronic kidney disease, stage I-IV",
+                                 ICD9_CODE=="403.91" ~  "Hypertensive chronic kidney disease, stage V+",
+                                 ICD9_CODE=="585.9" ~  "Chronic kidney disease NOS",
+                                 TRUE ~ SHORT_TITLE)) %>% select(`ICD-9-CM Code`=ICD9_CODE, `Description`=SHORT_TITLE)  %>% tableGrob(rows = NULL)
 
 
 grid.arrange(barplot,

@@ -208,11 +208,11 @@ admit_pts %>%
 
 ```
 ##   SUBJECT_ID Age                 DOD           DISCHTIME
-## 1      19246  58 2131-02-14 00:00:00 2126-06-08 15:17:00
-## 2      11728  57 2178-12-27 00:00:00 2173-04-21 16:25:00
-## 3      26063  80 2131-10-28 00:00:00 2131-10-25 15:40:00
-## 4      89287  84 2114-08-31 00:00:00 2113-11-18 17:48:00
-## 5      20409  47 2121-01-05 00:00:00 2119-04-14 12:28:00
+## 1      19662  61 2155-04-25 00:00:00 2154-08-04 11:50:00
+## 2       5065  83 2185-06-17 00:00:00 2180-02-25 18:00:00
+## 3      61420  49 2197-11-02 00:00:00 2197-08-11 18:07:00
+## 4      61005  68 2147-10-14 00:00:00 2147-09-04 15:17:00
+## 5      26013  70 2113-04-16 00:00:00 2108-06-11 13:01:00
 ```
 
 ```r
@@ -435,11 +435,11 @@ icd_precln %>% sample_n(5)
 
 ```
 ##   SUBJECT_ID HADM_ID SEQ_NUM ICD9_CODE
-## 1      16883  119785      13      2773
-## 2      42728  142693       2      3363
-## 3      25787  180521       1       430
-## 4      24569  156589       8     25000
-## 5       6062  186821       5      4589
+## 1      51462  137668      11      7907
+## 2      48837  152960      12     32723
+## 3      19029  135161      24      7885
+## 4      54872  176325       3     51881
+## 5      22024  149586      16     29620
 ```
 
 ##### Checking Code Definitions
@@ -1163,6 +1163,11 @@ top10_corr_plot <- icd_cohort %>%
 ```
 
 ```r
+top10_corr_plot <- top10_corr_plot %>%  mutate(group1 = 
+                             paste0(substr(group1, 0, 3), ".", substr(group1, 4, nchar(group1))),
+                           group2 = 
+                             paste0(substr(group2, 0, 3), ".", substr(group2, 4, nchar(group2))))
+
 barplot <- top10_corr_plot %>% mutate(Pair = paste0(group1, ", ", group2)) %>% 
   ggplot(aes(x=reorder(Pair, corr), y=round(corr, 2))) +
   geom_bar(stat='identity', fill="black", alpha=0.6) + 
@@ -1201,14 +1206,15 @@ require(grid)
 ```r
 corrtbl <- c(top10_corr_plot %>% pull(group1) %>% unique(),
              t(t(top10_corr_plot %>% pull(group2) %>% unique()))) %>% unique() %>% data.frame(ICD9_CODE=.) %>%
-  merge(icd_descr %>% select(ICD9_CODE, SHORT_TITLE), by="ICD9_CODE", all.x=T) %>% arrange(ICD9_CODE) %>% 
+  merge(icd_descr %>% select(ICD9_CODE, SHORT_TITLE) %>% 
+          mutate(ICD9_CODE = paste0(substr(ICD9_CODE, 0, 3), ".", substr(ICD9_CODE, 4, nchar(ICD9_CODE)))), by="ICD9_CODE", all.x=T) %>% arrange(ICD9_CODE) %>% 
   mutate(SHORT_TITLE = case_when(is.na(SHORT_TITLE) ~ "Digestive system complications NOS",
-                                 ICD9_CODE=="25060" ~  "Diabetes (II) with neurological manifestations", 
-                                 ICD9_CODE=="29410" ~  "Dementia without behavioral disturbance",
-                                 ICD9_CODE=="40390" ~  "Hypertensive chronic kidney disease, stage I-IV",
-                                 ICD9_CODE=="40391" ~  "Hypertensive chronic kidney disease, stage V+",
-                                 ICD9_CODE=="5859" ~  "Chronic kidney disease NOS",
-                                 TRUE ~ SHORT_TITLE)) %>% select(`ICD-9-CM Code`=ICD9_CODE, `Description`=SHORT_TITLE) %>% tableGrob(rows = NULL)
+                                 ICD9_CODE=="250.60" ~  "Diabetes (II) with neurological manifestations", 
+                                 ICD9_CODE=="294.10" ~  "Dementia without behavioral disturbance",
+                                 ICD9_CODE=="403.90" ~  "Hypertensive chronic kidney disease, stage I-IV",
+                                 ICD9_CODE=="403.91" ~  "Hypertensive chronic kidney disease, stage V+",
+                                 ICD9_CODE=="585.9" ~  "Chronic kidney disease NOS",
+                                 TRUE ~ SHORT_TITLE)) %>% select(`ICD-9-CM Code`=ICD9_CODE, `Description`=SHORT_TITLE)  %>% tableGrob(rows = NULL)
 
 
 grid.arrange(barplot,
