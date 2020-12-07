@@ -1,12 +1,11 @@
 ---
-title: Treelet Transform of <br> ICD-9-CM Diagnosis Codes
-subtitle: Graduate School of Public Health, Department of Biostatistics <br> Masters Thesis Defense
-author: Dominic DiSanto
-date: Defended on DATE
+title: Treelet Dimension Reduction of ICD-9-CM Diagnosis Codes
+subtitle: Dominic DiSanto, Master's Thesis
+author: Graduate School of Public Health, Department of Biostatistics
+date: "Defended on December 7th, 2020"
 output: 
   ioslides_presentation
 ---
-
 <style>
 table,
 .table-condensed,
@@ -71,131 +70,21 @@ div.footnotes {
   });
 </script>
   
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
-```
-
-```{r, message=F, warning=F}
-require(magrittr) # Ceci n'est pas une %>%, loaded via dplyr also but liked to include for transparency 
-require(dplyr) # General data management, cleaning (admittedly I switch between Base R and tidyverse as I code, somewhat stream-of-consciousness ly)
-require(ggplot2) # Visualization
-require(tidyr) # pivot functions for transposing data to/from long and wide
-require(icd) # used in validity check of diagnoses codes
-require(lubridate) # used in evaluating dates, most notably in date of death 
-require(lares) # corr_cross function used to identify the top correlations within a data frame/design matrix
-require(corrplot) # used for visualizing correlation matrices
-require(here) # Used for data-calls/ease of file path storage usage 
-require(treelet) # Used for treelet analysis 
-require(ggdendro) # Used for dendrogram visualization of Treelet analysis
-require(gghighlight) # Used in cross-validation visualizations
-require(MASS) # Used for glm.nb negative binomial regression function 
-require(stringr) # Some regex matching for filtering in the visualiation of p-values & coefficients from GLM's 
-require(png) # image formatting
-require(grid) # image formatting
-
-select <- dplyr::select # Masking the MASS select function, somethign to do with ridge regression I think, in favor of dplyr's `select()` function for wrangling
-
-`%nin%` <- Negate(`%in%`) # Creating the inverse function of %in%, simpler than working with the !(...) negating logic syntax and saves me the extra parenthetical blocks
-
-cohort_full <-  read.csv("C:/Users/Dominic DiSanto/Documents/Grad School/Masters/Thesis/Treelet/Data/cohort_full.csv")
-colnames(cohort_full) <- cohort_full %>% colnames() %>% gsub(pattern = "X", "", x = .)
-# cohort_full %>% head()
-
-diagnosis_labs <- read.csv("C:/Users/Dominic DiSanto/Documents/Grad School/Masters/Thesis/Treelet/Data/Raw/D_ICD_DIAGNOSES.csv")
-
-```
-
-```{r}
-
-treelet_process <- function(x_mat, cov_mat){
-
-  tt_results <- tt_results <- treelet::Run_JTree(cov_mat, nrow(cov_mat)-1, 1:nrow(cov_mat)-1) # Running the `treelet` package's implementation and retaining all (1) to (p-1) results
-  energy <- list() # empty list to store energy scores
-
-      for(L in 1:length(tt_results$basis)) { # repeating this for all basis matrices identified in the treelet above
-        
-        basisk <- tt_results$basis[[L]] # storing the specific basis
-        w_x <- t(basisk) %*% t(x_mat) # applying the basis matrix to the original input matri of diagnosis codes 
-    
-          num_vec <- rowSums(abs(w_x)^2) # numerator vector -> calculation of the p-1 values for the numerator of the energy score calculation
-          den_vec <- x_mat^2 %>% colSums() # similar to the above line but the denominator calculation, column summed over all n observations
-              names(num_vec) <- NULL # removing dimension names o fmatrix
-              names(den_vec) <- NULL
-    
-        energy[[L]] <- matrix(c(1:ncol(x_mat), num_vec / den_vec), ncol=2, dimnames = list(NULL, c("W_i", "Energy"))) # generating energy scores
-    }
-
-  # Creating blank objects  
-    optimal_L <- matrix(c(1:length(energy), rep(NA, length(energy))), nrow=length(energy), dimnames = list(NULL, c("K", "Optimal L"))) # empty list set
-    retained_fts <- rep(list(rep(list(rep(NA, length(energy))), length(energy))), length(energy)) # empty list set
-
-  # Reordering the energy matrices in descending order of normed energy score
-    energy_ordered <- lapply(1:length(energy), function(L) energy[[L]][energy[[L]][,2] %>% order(decreasing = T),]) # sorting all p-1 energy vectors in descending order
-
-  # Identifying optimal L
-    optimal_L <- matrix(c(1:length(energy_ordered), # identifying the basis matrix with the highest energy summation for every given K
-                      sapply(1:length(energy_ordered), 
-                             function(K) which.max(sapply(1:length(energy), 
-                                                          function(x) sum(energy_ordered[[x]][1:K,2])
-                                                          )
-                                                   ))),
-                      ncol=2, dimnames=list(NULL, c("GivenK", "OptimalBasis_L")))
-
-  # And retained fts
-    retained_fts <- lapply(1:length(energy_ordered),
-                            function(x) energy_ordered[[optimal_L[x,2]]][optimal_L[1:x,1], 1]) # then the retained features of the basis that represent the K highest energy score columns
-
-  return(list(basis_mats=tt_results$basis,
-              optimal_params=optimal_L,
-              retained_fts=retained_fts))
+<style>
+fttable td, fttable th {
+    font-size: 25%;
+    line-height: 15px;
 }
+</style>
+
+```{r, echo=F, warning=F, message=F, results=F}
+knitr::opts_chunk$set(eval=T, echo=F)
+
+require(grid) # Used in grid.raster and readPNG to import results images
+require(knitr) # Obviously required for knitting to slides, but also including for transparency of using the knitr::include_graphics() function
+require(here) # To locate file path for relevant figures
+here()
 ```
-
-```{r}
-set.seed(2824)
-
-hold_out_pts <- sample(1:nrow(cohort_full), size=nrow(cohort_full)/5, replace = F)
-
-holdout_test <- cohort_full[hold_out_pts,]
-# nrow(holdout_test)
-
-cv_data <- cohort_full[setdiff(1:nrow(cohort_full), hold_out_pts),]
-# nrow(cv_data)
-
-cv_data$fold <- sample(c(rep(1, ceiling(nrow(cv_data)/5)),
-                         rep(2, ceiling(nrow(cv_data)/5)),
-                         rep(3, ceiling(nrow(cv_data)/5)),
-                         rep(4, ceiling(nrow(cv_data)/5)),
-                         rep(5, ceiling(nrow(cv_data)/5))
-                         ),
-                       size=nrow(cv_data), replace=F
-                       )
-```
-
-```{r}
-set.seed(70221)
-
-cohort_readmit <- cohort_full %>% filter(!is.na(Yr1Readmit))
-
-hold_out_readmit <- sample(1:nrow(cohort_readmit), size=nrow(cohort_readmit)/5, replace = F)
-
-holdout_test_readmit <- cohort_readmit[hold_out_readmit,]
-# nrow(holdout_test)
-
-cv_data_readmit <- cohort_readmit[setdiff(1:nrow(cohort_readmit), hold_out_readmit),]
-# nrow(cv_data)
-
-cv_data_readmit$fold <- sample(c(rep(1, ceiling(nrow(cv_data_readmit)/5)),
-                         rep(2, ceiling(nrow(cv_data_readmit)/5)),
-                         rep(3, ceiling(nrow(cv_data_readmit)/5)),
-                         rep(4, ceiling(nrow(cv_data_readmit)/5)),
-                         rep(5, ceiling(nrow(cv_data_readmit)/5))
-                         ),
-                       size=nrow(cv_data_readmit), replace=F
-                       )
-```
-
 
 
 
@@ -204,24 +93,11 @@ cv_data_readmit$fold <- sample(c(rep(1, ceiling(nrow(cv_data_readmit)/5)),
 
 ## Objectives 
 
-- **Primary Objective**: Transform a large number of ICD-9-CM diagnosis codes into a sparse set of features, using treelet dimension reduction, and apply this new feature space towards the prediction of clinical outcomes of in-hospital mortality, unplanned hospital re-admission, and hospital length of stay. 
+- **Primary Objective**: Transform a large number of ICD-9-CM diagnosis codes into a sparse set of features using ***treelet dimension reduction***, and apply this new feature space towards the ***prediction of clinical outcomes*** of in-hospital mortality, unplanned hospital re-admission, and hospital length of stay. 
 
 <br>
 
-- **Public Health Significance**: The presented work leverages a large, publicly accessible database of critical care admissions and generate useful predictive models of clinical outcomes using only patient demographic and comorbidity diagnosis information.
-
-
-## Modern Health Data 
-
-- Digitization of clinical data (such as in an electronic healthcare record) has led to large volumes of patient-level data
-
-<br>
-
-- These data sets commonly contain large patient populations *and* robust data elements for each respective patient
-
-<br>
-
-- Large, publicly available data sets are a growing resource of clinical data 
+- **Public Health Significance**: The presented work leverages a large, publicly accessible database of critical care admissions and generates useful predictive models of clinical outcomes using only patient demographic and comorbidity diagnosis information.
 
 
 ## Clinical Prediction Models
@@ -234,7 +110,25 @@ cv_data_readmit$fold <- sample(c(rep(1, ceiling(nrow(cv_data_readmit)/5)),
 
 <br>
 
-- Ideal models demonstrate high prediction accuracy with few and easily collected data elements
+- Useful models not only demonstrate high prediction accuracy but ideally require *"feasible"* data 
+    - Inexpensive
+    - Non-invasive
+    - Standardized
+
+
+## Modern Healthcare Data 
+
+- Digitization of clinical data (such as in an electronic healthcare record) has led to large volumes of patient-level data
+
+<br>
+
+- Large, publicily available  data sets are growing source of clinical research data, including both:
+    + Diverse patient populations 
+    + Robust data elements for each respective patient
+  
+
+
+
 
 
 ## Dimension Reduction 
@@ -247,12 +141,12 @@ cv_data_readmit$fold <- sample(c(rep(1, ceiling(nrow(cv_data_readmit)/5)),
 
 <br>
 
-- Commonly discussed in the context of high-dimensional biological data (e.g. genomic, metabilomic) 
+- Specific methods may not only reduce dimensionality but retain only a subset of the original data elements   
 
 
 ## Treelet 
 
-- A novel dimension reduction method proposed by Ann Lee, Boaz Nadler, and Larry Wasserman in 2008
+- A novel dimension reduction method proposed by Ann Lee, Boaz Nadler, and Larry Wasserman in <footnote content="Lee, A. B., Nadler, B., & Wasserman, L. (2008). Treelets—An adaptive multi-scale basis for sparse unordered data. The Annals of Applied Statistics, 2(2), 435–471. https://doi.org/10.1214/07-AOAS137">2008</footnote>
 
 <br>
 
@@ -260,7 +154,7 @@ cv_data_readmit$fold <- sample(c(rep(1, ceiling(nrow(cv_data_readmit)/5)),
 
 <br>
 
-- Has yet to be applied in high-dimensional diagnosis data or in fitting of clinical prediction models
+- Has yet to be applied in high-dimensional patient-level comorbidity data or in fitting of clinical prediction models
 
 
 # Data
@@ -271,11 +165,12 @@ cv_data_readmit$fold <- sample(c(rep(1, ceiling(nrow(cv_data_readmit)/5)),
 
 <br>
 
-- Propspetive cohort study of Beth Israel Deaconess Medical Center from 2001 to 2012
+- Prospective cohort study of Beth Israel Deaconess Medical Center critical care admissions from 2001 to 2012
 
 <br>
 
 - Contains diagnosis, lab, and demographic information from 60,000 admissions in over 45,000 patients 
+
 
 ## ICD-9-CM Diagnosis Codes 
 
@@ -289,20 +184,24 @@ cv_data_readmit$fold <- sample(c(rep(1, ceiling(nrow(cv_data_readmit)/5)),
 
 - Over 17,000 unique codes describing various patient diagnoses 
 
+<br>
+
+- The presented analysis included only ICD-9-CM codes with $\geq1\%$ prevalence in our full, analytic cohort $(p=178)$
+
 
 ## Outcomes
 
-- In-hospital mortality
+- **In-hospital mortality**
 
 <br>
 
-- Unplanned hospital re-admission
+- **Unplanned hospital re-admission**
   - Captured within year of hospital discharge
-  - *Analysis excluded patients who died post-discharge with no hospital re-admission*
+  - Analysis excluded patients who died post-discharge with no hospital re-admission
 
 <br>
 
-- Total hospital length of stay 
+- **Total hospital length of stay** 
   - Measured in days
 
 
@@ -310,147 +209,472 @@ cv_data_readmit$fold <- sample(c(rep(1, ceiling(nrow(cv_data_readmit)/5)),
 
 - Primary focus on ICD-9-CM diagnosis codes (following treelet dimension reduction)
 
+<br>
+
 - Models controlled for patient demographic variables
   - Age
   - Sex
-    - Genotypical sex of patient (Male, Female)
+    - *Genotypical sex of patient (Male, Female)*
   - Insurance 
-    - Categorized as Medicare, Medicaid, Private Insurance, or Self-Pay
+    - *Categorized as Medicare, Medicaid, Private Insurance, or Self-Pay*
 
 
 ## Analytic Cohort 
 
 - Final analysis of mortality and hospital length of stay included 38,554 patients
-
-- Hospital readmission analysis included 28,894
-  - *Excluding 9,660 patients who died within one-year of discharge without re-admission*
+    + Mortality rate of 14.49% (n=5,586)
+    + Median length of stay was 7 days (range of 1-295 days)  
   
-- Mortality and length of stay analytic cohort presented mortality rate of 14.49% (n=5,586)
-
-- 2,153 (7.45%) of patients experienced unplanned re-admission
-
-- Patients had median hospital length of stay of 7 days (and interquartile range of 4 to 12 days)
-    + Values ranged from 1 to 295 days
+<br>
+  
+- Hospital readmission analysis included 28,894
+  + Excluding 9,660 patients 
+  + 2,153 (7.45%) of patients experienced unplanned re-admission
+  
 
 
 # Statistical Analyses 
 
 
-## Treelet (1/2)
+## Overview
 
-- Proposed by Lee, Nadler, and Wasserman in 2007 ("*Treelets – An Adaptive Multi-Scale Basis for Sparse Unordered Data*")
-
+- Applied treelet dimension reduction to ICD-9-CM diagnosis codes
+     
 <br>
-
-- Inspired by existing dimension reduction methods of principal components analysis and hierarchical clustering
-
-<br>
-
-- Aims to represent an input set with reduced dimensionality *and* requiring only a subset of the input information provided
-
-
-
-## Treelet (2/2)
-
-- For $p$ input predictors, treelet constructs $p-1$ basis matrices (or $B_{L_1}, B_{L_2}, .... B_{L_{p-1}}$)
-
-<br>
-
-- The final representation requires identifying a value for the the $K$ parameter (for $K$ retained inputs in the $Lth$ basis matrix)
-     - For a given $K$, there is an identifiable cut-off ($L^*|K$) and respective basis ($B_{L^*|K}$) using the normalized energy score proposed by Lee et al.
+    
+- Used cross-validation of GLMs to identify values of treelet parameters $K$-dimensionality and $L|K$-basis matrix  
+     + Logistic regression for in-hospital mortality, hospital-readmission
+     + Negative binomial regression for hospital length of stay 
      
 <br>
 
-- Cross-validation can be used to identify the outcome-specific, optimal $K^*$ (and resulting $B_{L^*|K}$)
+- Final model fit measures were assessed on our hold-out test data-set (20% of each analytic cohort)
 
+
+## Treelet
+
+- Using the correlation matrix of our input data, performs a series of <footnote content="Equivalent to fitting local PCA on the input features of highest covariance">rotations</footnote>, grouping together highly correlated variables 
+
+- For $p$ input predictors, treelet constructs $p-1$ basis matrices $\left( or \ B_{L_1}, B_{L_2}, .... B_{L_{p-1}} \right)$ 
+
+- The final representation requires identifying a value for the the $K$ parameter (for $K$ retained inputs in the $Lth$ basis matrix)
+     - For a given $K$, there is a deterministic cut-off $\left( L^*|K \right)$ and respective basis $\left(B_{L^*|K}\right)$
+     
 
 ## Cross-Validation
 
-- Involves random splitting of data into "training" and "test" sets
-
-- Models are fit to "training" sets and performance assessed on "test" sets
-
-- The presented analyses used 5-fold cross-validation to select $K$ and $L|K$ parameters for treelet models
-
-- Final model performance was assessed on a holdout test data set that was *not* used in cross-validation or model fitting | *20% of each outcome's respective analytic cohort*
+- Analytic cohorts first split into training (80%) and test (20%) data sets
 
 
-## Logistic Regression
+- Used 5-fold cross-validation within the training data set to select $K$ and $L|K$ parameters for treelet models
+    + Logistic regression classification accuracy was assessed by Brier's Score $\frac{1}{N}\sum^N_{i=1} \left( \hat{p}_i - y_i\right)^2$
+    + Negative binomial fit by root-mean-square error $\sqrt{\frac{1}{N}\sum^N_{i=1} \left( \hat{y}_i - y_i\right)^2}$
 
-- Generalized linear model (GLM) that extends ordinary least squares linear regression to model *probabilities* of a binomially distributed outcome 
+- Final model performance was assessed on a holdout test data set that was *not* used in cross-validation or model fitting 
+
+
+## Overview (revisited)
+
+- Applied treelet dimension reduction to ICD-9-CM diagnosis codes
+     
+<br>
+    
+- Used cross-validation of GLMs to identify $K$-dimensionality and $L|K$ basis matrix parameters for each outcome
 
 <br>
 
-$$
-logit(\pi_i) = log \left(\frac{\pi_i}{1-\pi_i} \right) = \mathbf{x_i}\boldsymbol{\beta}
-$$
-<br>
-
-- Used in modeling binary outcomes of in-hospital mortality and unplanned re-admission
-
-## Negative Binomial Regression
-
-
-- Poisson regression is the most common GLM fit for count or rate data
-
-<br>
-
-- Negative binomial is an extension of Poisson regression, when the outcome of interest is *overdispersed*, using probability mass function: 
-
-$$
-P\left(y_i\right)=\frac{\Gamma\left(y_i+\frac{1}{\alpha}\right)}{\left(y_i!\right)\Gamma\left(\frac{1}{\alpha}\right)}\left(\frac{1}{1+\alpha\mu_i}\right)^\frac{1}{\alpha}\left(\frac{\alpha\mu_i}{1+\alpha\mu_i}\right)^{y_i}
-$$
-
-for $\mu_i = exp(\mathbf{x}_i\boldsymbol{\beta})$
-
-
-- Used in the presented work to model hospital length of stay  
-
-
-## Model Fit 
-
-- Logistic regression classification accuracy was assessed by Brier's Score
-$$\frac{1}{N}\sum^N_{i=1} \left( \hat{p}_i - y_i\right)^2$$
-  - *Area under receiver operating characteristic curve is additionally presented for final logistic regression models* 
-
-<br>
-
-- Negative binomial fit by root-mean-square error
-
-$$\frac{1}{N}\sum^N_{i=1} \left( \hat{y}_i - y_i\right)^2$$
-
-
+- Final model fit measures were assessed on our hold-out test data-set (20% of each analytic cohort)
+    + Compare model fit of treelet features to lasso, PCA, Charlson & Elixhauser indices, and original ICD data
 
 
 # Results
 
 
+
+#  In-Hospital Mortality  <br> <br> <font size="6"> <span style="color: gray;"> Hospital Re-Admission  <br> <br>  Length of Stay </font> </span>
+
+
 ## Mortality (Cross-Validation)
 
-```{r, warning=F, message=F, echo=F}
-mortality_performance <- read.csv("C:/Users/Dominic DiSanto/Documents/Grad School/Masters/Thesis/Treelet/Results/Treelet_KLOpt_WithinCVLoop/MortalityModel_CVPerformance_NoLOS_NewKLCode.csv")
-
-k_1sd <- mortality_performance[mortality_performance$BS_TestAvg<=(min(mortality_performance$BS_TestAvg) + sd(mortality_performance$BS_TestAvg)), ] %>% .[1,1]
-
-mortality_performance <- mortality_performance %>% mutate(ParamFlag = 
-                                   case_when(
-                                     BS_TestAvg==min(BS_TestAvg) ~ "Minimizes Briers Score",
-                                     K==k_1sd ~ "More Sparse Parameter",
-                                     TRUE ~ NA_character_
-                                   )) %>% ungroup()
-
-
-ggplot(mortality_performance, aes(x=K, y=BS_TestAvg, color = as.factor(ParamFlag))) +
-  geom_line(lwd=1.1, alpha=0.6) + geom_point(size=2.5) +
-  theme_minimal() + ggtitle("In-Hospital Mortality Model") + 
-  xlab("Value of Parameter K") + ylab("Average Briers Score (Across 5 Test Folds)") + 
-  gghighlight(ParamFlag!=0) + labs(color="Optimal Parameters") +
-  scale_color_brewer(type = "qual", palette = 6) + 
-  theme(legend.position=c(0.75, 0.75), text = element_text(size=13.5))
+```{r, out.width = "690 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "CrossValidation_Mortality.png"))
 ```
 
 
-## Mortality (Final Model Results)
+## Mortality (Covariate Importance)
+
+```{r, out.width = "845 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "PValue_Coefficient_Graph_Mortality.png"))
+```
+
+
+## Mortality (ROC Curves)
+
+```{r, out.width = "690 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "ComparativeROC_Mortality.png"))
+```
+
+
+## Mortality (Predicted Probabilities)
+
+```{r, out.width = "690 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "PredictionComp_PhatDensity_Mortality.png"))
+```
+
+
+## Mortality (Summary)
+
+- Treelet reduction (and cross-validation) did *not* yield a sparse feature space
+     + $K=123$ dimensions retained loadings from all 178 diagnosis codes 
+
+<br>
+
+|**Model**|**Test AUC**|
+|-----|-------------|
+|Including All Treelet Features|0.858|
+|Including 5 Most-Significant Treelet Features|0.830|
+|Excluding Treelet Features|0.666|
+
+
+
+# <font size="6"> <span style="color: gray;"> In-Hospital Mortality </span> </font> <br> <br> Hospital Re-Admission  <br> <br> <span style="color: gray;"> <font size="6"> Length of Stay </font> </span>
+
+
+## Readmission (Cross-Validation)
+
+```{r, out.width = "690 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "CrossValidation_Readmission.png"))
+```
+
+
+## Readmission (Covariate Importance)
+
+```{r, out.width = "845 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "PValue_CoefficientGraph_Readmission.png"))
+```
+
+
+## Readmission (ROC Curves)
+
+```{r, out.width = "690 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "ComparativeROC_Readmission.png"))
+```
+
+
+
+## Readmission (Predicted Probabilities)
+
+```{r, out.width = "775 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "PredictionComp_PhatDensities_Readmission.png"))
+```
+
+
+## Readmission (Summary)
+
+- Treelet improved performance but still presented only limited discrimination of hospital re-admission
+     + While cross-validation reduced our 178 diagnosis codes covariates into $K=30$ variables, we again retained loadings from all codes
+
+<br>
+
+|Model|Test AUC|
+|-----|-------------|
+|Including All Treelet Features|0.661|
+|Including 5 Most-Significant Treelet Features|0.658|
+|Excluding Treelet Features|0.574|
+
+
+# <font size="6"> <span style="color: gray;"> In-Hospital Mortality </span> </font> <br> <br> <span style="color: gray;"> <font size="6"> Hospital Re-admission </font> </span> <br> <br> Length of Stay
+
+
+## Length of Stay (Cross-Validation)
+
+```{r, out.width = "690 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "CrossValidation_LOS.png"))
+```
+
+## Length of Stay (Covariate Importance)
+
+```{r, out.width = "845 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "PValue_Coefficient_Graph_LOS.png"))
+```
+
+## Length of Stay (Performance by Included Features)
+
+```{r, out.width = "690 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "ComparativeRMSE_LOS.png"))
+```
+
+
+
+
+## Length of Stay (Predicted Values)
+
+
+```{r, out.width = "700 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "PredictionComp_ScatterPlot_LOSPredictions.png"))
+```
+
+
+## Length of Stay (Summary)
+
+- Treelet identified a reduced dimensionality and a sparse feature set
+     + The retained $K=46$ variables from our treelet model including loadings from 107 of our 178 ICD-9-CM diagnosis codes
+
+<br>
+
+|Model|Test RMSE|
+|-----|-------------|
+|Including All Treelet Features|10.29|
+|Including 5 Most-Significant Treelet Features|10.35|
+|Excluding Treelet Features|11.09|
+
+# Model Comparisons
+
+## Comparative Model Results
+
+|***Model***|**Mortality\* **|**Readmission\* **|**Length of Stay\*\* **|
+|-------|-------------|----------------|------------------|
+|All Treelet Features|0.858|0.661|10.29|
+|Top 5 Treelet Features|0.830|0.658|10.35|
+|Lasso|0.868|0.669|9.61|
+|PCA|0.860|0.667|10.24|
+|All ICD Codes| 0.867 | 0.667 | 11.75 |
+|Charlson|0.632|0.502|13.48|
+|Elixhauser|0.615|0.513|13.49|
+\* *AUC*;  \*\* *RMSE*
+
+<!-- ## Comparative Model Results -->
+
+<!-- |***Outcome***|**All Treelet Features**|**Top 5 Treelet Features** | **LASSO** | **PCA** | **Charlson** | **Elixhauser**| -->
+<!-- |-------------|------------------------|---------------------------|-----------|---------|--------------|---------------| -->
+<!-- |Mortality\*| 0.858| 0.830 | 0.860 | 0.632 | 0.615 | -->
+<!-- |Re-Admission\*| 0.661| 0.658 | 0.669 | 0.667 | 0.502 | 0.513 | -->
+<!-- |Length of Stay\*\*| 10.29 | 10.35 | 9.61 | 10.24 | 13.48 | 13.49 | -->
+<!-- \* *AUC*   -->
+<!-- \*\* *RMSE* -->
+
+
+
+# Implications & Conclusions
+
+
+## Objectives (Revisited)
+
+- **Primary Objective**: Transform a large number of ICD-9-CM diagnosis codes into a sparse set of features using ***treelet dimension reduction***, and apply this new feature space towards the ***prediction of clinical outcomes*** of in-hospital mortality, unplanned hospital re-admission, and hospital length of stay. 
+
+<br>
+
+- **Public Health Significance**: The presented work leverages a large, publicly accessible database of critical care admissions and generates useful predictive models of clinical outcomes using only patient demographic and comorbidity diagnosis information.
+
+
+## Summary 
+
+- ICD-9-CM diagnosis codes improve predictive performance of in-hospital mortality, but remain limited in their ability to predict hospital length of stay and re-admission
+
+<br>
+
+- Additional information (e.g. patient discharge disposition, social determinants of health, patient environment data) may be necessary to adequately predict post-discharge outcomes
+
+<br>
+
+- Treelet dimension reduction reduces the number of retained covariates in our models but does not outperform PCA, LASSO  
+
+## References
+
+- <font size="3"> Awad, A., Bader–El–Den, M., & McNicholas, J. (2017). Patient length of stay and mortality prediction: A survey. Health Services Management Research, 30(2), 105–120. https://doi.org/10.1177/0951484817696212  </font>
+
+- <font size="3"> Lee, A. B., Nadler, B., & Wasserman, L. (2008). Treelets—An adaptive multi-scale basis for sparse unordered data. The Annals of Applied Statistics, 2(2), 435–471. https://doi.org/10.1214/07-AOAS137  </font>
+
+- <font size="3"> Harrell, F. E. (2001). Regression Modeling Strategies: With Applications to Linear Models, Logistic Regression, and Survival Analysis (Updated September 4, 2020). Springer Science & Business Media. </font>
+
+- <font size="3"> Hastie, T., Tibshirani, R., & Friedman, J. (2017). The Elements of Statistical Learning: Data Mining, Inference, and Prediction (Second Edition). Springer. </font>
+
+-  <font size="3"> MIMIC-III, a freely accessible critical care database. Johnson AEW, Pollard TJ, Shen L, Lehman L, Feng M, Ghassemi M, Moody B, Szolovits P, Celi LA, and Mark RG. Scientific Data (2016). DOI: 10.1038/sdata.2016.35. Available from: http://www.nature.com/articles/sdata201635  </font>
+
+
+# Supplemental Slides 
+
+# Probability Curves
+
+## Mortality 
+
+**Retaining only demographic predictors**
+
+```{r, out.width = "690 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "Supplemental", "NoICD_PhatDensities_Mortality_Slides.jpg"))
+```
+
+## Mortality 
+
+**Retaining demographic & treelet predictors**
+
+```{r, out.width = "630 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "PredictionComp_PhatDensity_Mortality.png"))
+```
+
+
+## Readmission 
+
+**Retaining only demographic predictors**
+
+```{r, out.width = "775 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "Supplemental", "NoICD_PhatDensities_Readmission.png"))
+```
+
+## Readmission 
+
+**Retaining demographic & treelet predictors**
+
+```{r, out.width = "775 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "PredictionComp_PhatDensities_Readmission.png"))
+```
+
+
+## Length of Stay 
+
+**Retaining only demographic predictors**
+
+```{r, out.width = "750 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "Supplemental", "NoICD_ScatterPlot_LOS.png"))
+```
+
+## Length of Stay 
+
+**Retaining demographic & treelet predictors**
+
+```{r, out.width = "680 px", fig.align="center"}
+knitr::include_graphics(here("Results", "Tables & Figures", "PredictionComp_ScatterPlot_LOSPredictions.png"))
+```
+
+
+# Retained Diagnosis Codes
+
+## Retained Diagnosis Codes
+
+|Outcome|All Treelet Features | Top 5 Treelet <br> Features | LASSO |
+|-------|--------------|-------------------------------|-------|
+|Mortality|178|38|170|
+|Hospital Re-admission|178|178|48|
+|Length of Stay|107|29|178|
+
+
+
+# Notable Treelet Features
+
+## Mortality 
+
+```{r, eval=T, echo=F, warning=F, message=F}
+require(here)
+require(dplyr)
+require(magrittr)
+
+mortality_fts <- read.csv(here("Results", "Treelet_KLOpt_WithinCVLoop", "LoadingMatrix_Mortality_Redux.csv"))
+
+indices <- mortality_fts %>% filter(Feature!="") %>% pull(X)
+mortality_fts_lab <- mortality_fts
+
+for (i in 1:(length(indices)-1) ){
+  
+  mortality_fts_lab[indices[i]:(indices[i+1]-1), "Feature"] <- mortality_fts[indices[i], "Feature"]
+  
+}
+
+fts_tab <- mortality_fts_lab %>% filter(Feature %in% c("Cluster 1", "Cluster 2", "Cluster 12", "Cluster 15", "Cluster 38")) %>%
+  group_by(Feature) %>% slice_max(Loading, n = 3) %>% ungroup() %>%  mutate(Description = 
+                                                                              case_when(
+                                                                                Code==9974 ~ "Digestive compliations NOS",
+                                                                                TRUE ~ SHORT_TITLE),
+                                                                            `ICD-9-CM Code` = paste0(substr(Code, 0, 3), ".", substr(Code, 4, nchar(Code))),
+                                                                            Loading = round(Loading, 3)
+                                                                            ) %>% 
+  select(`ICD-9-CM Code`, `Treelet Feature`=Feature, Loading, Description)
+
+fts_tab %>% mutate(` `= rep("", nrow(fts_tab))) %>% select(` `, everything()) %>% 
+  knitr::kable("html") %>% kableExtra::kable_styling(font_size=18)
+
+# knitr::kable(fts_tab)
+```
+
+## Readmission
+
+```{r, eval=T, echo=F, warning=F, message=F}
+require(here)
+require(dplyr)
+require(magrittr)
+
+readmit_fts <- read.csv(here("Results", "Treelet_KLOpt_WithinCVLoop", "LoadingMatrix_Readmit_Redux.csv"))
+
+readmit_indices <- readmit_fts %>% filter(Feature!="") %>% pull(X)
+readmit_fts_lab <- readmit_fts
+
+for (i in 1:(length(readmit_indices)-1) ){
+  
+  readmit_fts_lab[readmit_indices[i]:(readmit_indices[i+1]-1), "Feature"] <- readmit_fts[readmit_indices[i], "Feature"]
+  
+}
+
+readmit_fts_tab <- readmit_fts_lab %>% filter(Feature %in% c("Cluster 1", "Cluster 2", "Cluster 4", "Cluster 22")) %>%
+  group_by(Feature) %>% slice_max(Loading, n = 3) %>% ungroup() %>%  mutate(Description = 
+                                                                              case_when(
+                                                                                Code==9974 ~ "Digestive compliations NOS",
+                                                                                TRUE ~ SHORT_TITLE),
+                                                                            `ICD-9-CM Code` = paste0(substr(Code, 0, 3), ".", substr(Code, 4, nchar(Code))),
+                                                                            Loading = round(Loading, 3)
+                                                                            ) %>% 
+  select(`ICD-9-CM Code`, `Treelet Feature`=Feature, Loading, Description)
+
+
+knitr::kable(readmit_fts_tab)  %>% kableExtra::kable_styling(font_size=18)
+```
+
+## Length of Stay 
+
+```{r, eval=T, echo=F, warning=F, message=F}
+require(here)
+require(dplyr)
+require(magrittr)
+
+los_fts <- read.csv(here("Results", "Treelet_KLOpt_WithinCVLoop", "LoadingMatrix_LOS_Redux.csv"))
+
+los_indices <- los_fts %>% filter(Feature!="") %>% pull(X)
+los_fts_lab <- los_fts
+
+for (i in 1:(length(los_indices)-1) ){
+  
+  los_fts_lab[los_indices[i]:(los_indices[i+1]-1), "Feature"] <- los_fts[los_indices[i], "Feature"]
+  
+}
+
+los_fts_lab <- los_fts_lab %>% filter(Feature %in% c("Cluster 1", "Cluster 2", "Cluster 4", "Cluster 22")) %>%
+  group_by(Feature) %>% slice_max(Loading, n = 3) %>% ungroup() %>%  mutate(Description = 
+                                                                              case_when(
+                                                                                Code==9974 ~ "Digestive compliations NOS",
+                                                                                TRUE ~ SHORT_TITLE),
+                                                                            `ICD-9-CM Code` = paste0(substr(Code, 0, 3), ".", substr(Code, 4, nchar(Code))),
+                                                                            Loading = round(Loading, 3)
+                                                                            ) %>% 
+  select(`ICD-9-CM Code`, `Treelet Feature`=Feature, Loading, Description)
+
+
+knitr::kable(los_fts_lab) %>% kableExtra::kable_styling(font_size=18)
+```
+
+
+# Additional Comparative Models (Treelet & ICD Features)
+
+
+## Comparative Models <br> (Treelet & ICD Only)
+
+
+| Outcome | Treelet (All Features) | ICD Codes (All Features) | Treelet (5 Features) | ICD Codes (Top 5 Features)|
+| --------|-----------------------|---------------|----------------------|--------------------------------------|
+| Mortality | 0.858 | 0.867 | 0.830 | 0.851 |
+| Readmission | 0.661 | 0.667 | 0.658 | 0.667 |
+| Length of Stay | 10.29 | 11.75 | 10.35 | 11.22 |
+
+
+# Patient Demographic <br> Model Results
+## Mortality (Model Results)
 
 | Predictor |	$\beta$	| 95% Confidence Interval	| P-Value |
 |---|---|---|---|
@@ -462,45 +686,7 @@ ggplot(mortality_performance, aes(x=K, y=BS_TestAvg, color = as.factor(ParamFlag
 | Medicare |  0.328 | [0.029, 0.627] |  0.032| 
 | Private Insurance | 0.103 | [-0.191, 0.397] |  0.491 |
 | Self-Pay	| 1.174 | [0.762, 1.586]	 |  <0.001| 
-
-
 **Test Model Performance: Brier Score = 0.0917; AUC = 0.858**
-
-## Mortality (Covariate Importance)
-
-```{r}
-mort_img <- readPNG("PValue_CoefficientGraph_Mortality.png")
-grid.raster(mort_img)
-```
-
-
-## Readmission (Cross-Validation)
-```{r}
-readmit_performance <- read.csv("C:/Users/Dominic DiSanto/Documents/Grad School/Masters/Thesis/Treelet/Results/Treelet_KLOpt_WithinCVLoop/ReadmissionModel_CVPerformance_NewKLCode.csv")
-
-readmit_performance <- readmit_performance %>% mutate(BS_TestAvg = 
-                            rowMeans(select(readmit_performance, starts_with("BS_F"))),
-                          AUC_TestAvg =
-                            rowMeans(select(readmit_performance, starts_with("AUC_F"))))
-
-k_1sd_readmit <- readmit_performance[readmit_performance$BS_TestAvg<=(min(readmit_performance$BS_TestAvg) + sd(readmit_performance$BS_TestAvg)), ] %>% .[1,1]
-
-readmit_performance <- readmit_performance %>% mutate(ParamFlag = 
-                                   case_when(
-                                     BS_TestAvg==min(BS_TestAvg) ~ "Minimizes Briers Score",
-                                     K==k_1sd_readmit ~ "More Sparse Parameter",
-                                     TRUE ~ NA_character_
-                                   )) %>% ungroup()
-
-ggplot(readmit_performance, aes(x=K, y=BS_TestAvg, color=as.factor(ParamFlag))) +
-  geom_line(lwd=1.1, alpha=0.6) + geom_point(size=2.5) +
-  theme_minimal() + ggtitle("Hospital Readmission Model") + 
-  xlab("Value of Parameter K") + ylab("Average Briers Score (Across 5 Test Folds)") + 
-  gghighlight(ParamFlag!=0) + labs(color="Optimal Parameters") +
-  scale_color_brewer(type = "qual", palette = 6) + 
-  theme(legend.position=c(0.65, 0.75), text = element_text(size=13.5))
-```
-
 
 
 ## Readmission (Final Model Results)
@@ -519,41 +705,6 @@ ggplot(readmit_performance, aes(x=K, y=BS_TestAvg, color=as.factor(ParamFlag))) 
 **Test Model Performance: Brier Score = 0.0681; AUC = 0.661**
 
 
-## Readmission (Covariate Importance)
-
-```{r}
-readmit_img <- readPNG("PValue_CoefficientGraph_Readmission.png")
-grid.raster(readmit_img)
-```
-
-<!-- ![beta_graph](PValue_CoefficientGraph_Readmission.png) -->
-
-
-## Length of Stay (Cross-Validation)
-
-```{r}
-los_performance <- read.csv("C:/Users/Dominic DiSanto/Documents/Grad School/Masters/Thesis/Treelet/Results/Treelet_KLOpt_WithinCVLoop/LOSModel_MSE_DF_NewKLCode.csv")
-
-k_1sd_los <- los_performance[los_performance$MSE_TestAvg<=(min(los_performance$MSE_TestAvg) + sd(los_performance$MSE_TestAvg)), ] %>% .[1,1]
-
-los_performance <- los_performance %>% mutate(ParamFlag = 
-                                   case_when(
-                                     MSE_TestAvg==min(MSE_TestAvg) ~ "Minimizes MSE",
-                                     K==k_1sd_los ~ "More Sparse Parameter",
-                                     TRUE ~ NA_character_
-                                   )) %>% ungroup()
-
-
-ggplot(los_performance, aes(x=K, y=MSE_TestAvg, color = as.factor(ParamFlag))) +
-  geom_line(lwd=1.1, alpha=0.6) + geom_point(size=2.5) +
-  theme_minimal() + ggtitle("Hospital Length of Stay Model") + 
-  xlab("Value of Parameter K") + ylab("Average Mean-Squared Error\n(Across 5 Test Folds)") + 
-  gghighlight(ParamFlag!=0) + labs(color="Optimal Parameters") +
-  scale_color_brewer(type = "qual", palette = 6) + 
-  theme(legend.position=c(0.75, 0.75), text = element_text(size=13.5))
-
-```
-
 ## Length of Stay (Final Model Results)
 
 | Predictor |	$\beta$	| 95% Confidence Interval	| P-Value |
@@ -568,68 +719,3 @@ ggplot(los_performance, aes(x=K, y=MSE_TestAvg, color = as.factor(ParamFlag))) +
 | Self-Pay	| -0.318 | [-0.407, -0.229]	| <0.001 | 
 
 **Test Model Performance: RMSE = 10.29**
-
-
-## Length of Stay (Covariate Importance)
-
-```{r}
-los_img <- readPNG("PValue_Coefficient_Graph_LOS.png")
-grid.raster(los_img)
-```
-
-     
-
-# Implications & Conclusions
-
-## Model Summaries
-
-- Final model or mortality demonstrates good predictive performance
-
-<br>
-
-- Models of re-admission and length of stay demonstrate limited prediction performance
-
-<br>
-
-- Treelet reduced dimensions for the number of inputs from our 178 ICD-9-CM diagnosis codes 
-     - Only the parameters identified for our model of re-admission yielded a sparse feature space
-
-
-## Comparison to Existing Models
-
-- The presented model of mortality out-performs <footnote content = "Awad et al (2017).">previously published models</footnote> of in-hospital mortality
-
-<br>
-
-- Our results corroborate previous publications, where diagnosis-data alone failed to adequately predict hospital re-admission and length of stay 
-
-
-## Objectives (Revisited)
-
-- **Primary Objective**: Transform a large number of ICD-9-CM diagnosis codes into a sparse set of features, using treelet dimension reduction, and apply this new feature space towards the prediction of clinical outcomes of in-hospital mortality, unplanned hospital re-admission, and hospital length of stay. 
-
-<br>
-
-- **Public Health Significance**: The presented work leverages a large, publicly accessible database of critical care admissions and generate useful predictive models of clinical outcomes using only patient demographic and comorbidity diagnosis information.
-
-
-
-## Summary 
-
-- The presented work leverages a large, publicly available data set of critical care admissions and a novel dimension reduction method to build predictive models of hospital mortality, readmission, and length of  stay 
-
-- When paired with patient age, sex, and payment method data, ICD-9-CM diagnosis codes demonstrate good predictive performance of in-hospital mortality, but remain limited in their ability to predict hospital length of stay and re-admission
-
-
-- Additional information (e.g. patient discharge disposition, social determinants of health, patient environment data) may be necessary to adequately predict post-discharge outcomes
-
-
-
-## References
-
-- <font size="3"> Awad, A., Bader–El–Den, M., & McNicholas, J. (2017). Patient length of stay and mortality prediction: A survey. Health Services Management Research, 30(2), 105–120. https://doi.org/10.1177/0951484817696212 </font>
-
-- <font size="3"> Lee, A. B., Nadler, B., & Wasserman, L. (2008). Treelets—An adaptive multi-scale basis for sparse unordered data. The Annals of Applied Statistics, 2(2), 435–471. https://doi.org/10.1214/07-AOAS137</font> </font>
-- <font size="3"> Harrell, F. E. (2001). Regression Modeling Strategies: With Applications to Linear Models, Logistic Regression, and Survival Analysis (Updated September 4, 2020). Springer Science & Business Media.  </font>
-- <font size="3"> Hastie, T., Tibshirani, R., & Friedman, J. (2017). The Elements of Statistical Learning: Data Mining, Inference, and Prediction (Second Edition). Springer. </font>
--  <font size="3"> MIMIC-III, a freely accessible critical care database. Johnson AEW, Pollard TJ, Shen L, Lehman L, Feng M, Ghassemi M, Moody B, Szolovits P, Celi LA, and Mark RG. Scientific Data (2016). DOI: 10.1038/sdata.2016.35. Available from: http://www.nature.com/articles/sdata201635  </font>
